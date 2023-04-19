@@ -390,13 +390,8 @@ private:
             throw std::runtime_error("zookeeper_init error");
         }
 
-        int times = 0;
-        while (!is_conntected_) {
-            if (times >= 1000) {
-                throw std::runtime_error("cppzk connect zookeeper server timeout");
-            }
+        while (!is_conntected_ && run_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            times++;
         }
 
         need_detect_ = true;

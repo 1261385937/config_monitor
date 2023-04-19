@@ -18,7 +18,7 @@ namespace etcd {
 class etcd_v3;
 }
 
-namespace config {
+namespace cm {
 
 #define HAS_MEMBER(FUN)                                                                                              \
     template <typename T, class U = void>                                                                            \
@@ -72,18 +72,12 @@ public:
         if constexpr (has_set_expired_cb_v<ConfigType>) {
             ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
                 printf("session expired, then reconnect");
-            begin:
-                try {
-                    ConfigType::clear_resource();
-                    last_sub_path_.clear();
-                    this->callable(
-                        [this](auto&&... args) { ConfigType::initialize(std::forward<decltype(args)>(args)...); },
-                        std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
-                } catch (std::exception& e) {
-                    printf("reconnect error:%s sleep 3s, then retry", e.what());
-                    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-                    goto begin;
-                }
+
+                ConfigType::clear_resource();
+                last_sub_path_.clear();
+                this->callable(
+                    [this](auto&&... args) { ConfigType::initialize(std::forward<decltype(args)>(args)...); },
+                    std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
 
                 // auto rewatch
                 if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
@@ -323,4 +317,4 @@ private:
         f(std::get<I>(std::forward<Tuple>(tuple))...);
     }
 };
-}  // namespace config
+}  // namespace cm
