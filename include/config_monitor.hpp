@@ -168,7 +168,7 @@ public:
 
 			ConfigType::get_sub_path(
 				main_path,
-				[this, cb, main_path](auto e, auto, std::vector<std::string>&& sub_paths) {
+				[this, cb, main_path, monitor_new_path](auto e, auto, std::vector<std::string>&& sub_paths) {
 				if (!ConfigType::is_no_error(e)) {
 					return;
 				}

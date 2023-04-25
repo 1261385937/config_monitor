@@ -432,7 +432,6 @@ protected:
 		return zk_create_mode::zk_persistent;
 	}
 
-
 	auto get_create_mode(bool is_ephemeral, bool is_sequential) {
 		zk_create_mode create_mode;
 		if (is_ephemeral) {
