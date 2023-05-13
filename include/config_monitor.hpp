@@ -141,7 +141,7 @@ public:
                 return;
             }
 
-            auto monitor_new_path = [this, cb, main_path](const std::string& sub_path) {
+            auto monitor_path = [this, cb, main_path](const std::string& sub_path) {
                 ConfigType::get_path_value(
                     sub_path,
                     [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
@@ -168,7 +168,7 @@ public:
 
             ConfigType::get_sub_path(
                 main_path,
-                [this, cb, main_path, monitor_new_path](auto e, auto, std::vector<std::string>&& sub_paths) {
+                [this, cb, main_path, monitor_path](auto e, auto, auto&& sub_paths) {
                 if (!ConfigType::is_no_error(e)) {
                     return;
                 }
@@ -178,7 +178,7 @@ public:
                 // all is new paths, monitor all
                 if (it == last_sub_path_.end()) {
                     for (auto&& sub_path : sub_paths) {
-                        monitor_new_path(main_path + "/" + sub_path);
+                        monitor_path(main_path + "/" + sub_path);
                         sub_paths_set.emplace(std::move(sub_path));
                     }
                     last_sub_path_.emplace(main_path, std::move(sub_paths_set));
@@ -189,7 +189,7 @@ public:
                     if (it->second.find(sub_path) != it->second.end()) {  // exist
                         continue;
                     }
-                    monitor_new_path(main_path + "/" + sub_path);
+                    monitor_path(main_path + "/" + sub_path);
                 }
 
                 for (auto&& sub_path : sub_paths) {
@@ -253,8 +253,8 @@ public:
         ConfigType::create_path_sync(sp_path.back(), value, create_mode, new_path);
     }
 
-    auto set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
-        return ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
+    void set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
+        ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
             if (cb) {
                 cb(ConfigType::is_no_error(e) ? true : false);
             }
