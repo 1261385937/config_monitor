@@ -231,28 +231,6 @@ public:
         });
     }
 
-    void create_path_sync(std::string_view path, bool is_ephemeral = false,
-                          bool is_sequential = false, std::string_view value = "") {
-        auto r = ConfigType::exists_path_sync(path);
-        if (ConfigType::is_no_error(r) && !is_sequential) {
-            return;
-        }
-        auto create_mode = ConfigType::get_create_mode(is_ephemeral, is_sequential);
-
-        std::string new_path;
-        auto sp_path = split_path(path);
-        if (sp_path.size() == 1) {
-            ConfigType::create_path_sync(path, value, create_mode, new_path);
-            return;
-        }
-
-        for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-            ConfigType::create_path_sync(sp_path[i], "",
-                                         ConfigType::get_persistent_mode(), new_path);
-        }
-        ConfigType::create_path_sync(sp_path.back(), value, create_mode, new_path);
-    }
-
     void set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
         ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
             if (cb) {
