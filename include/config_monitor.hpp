@@ -200,8 +200,8 @@ public:
         });
     }
 
-    void create_path(std::string_view path, create_cb cb, bool is_ephemeral = false,
-                     bool is_sequential = false, std::string_view value = "") {
+    void create_path(std::string_view path, create_cb cb, std::string_view value = "",
+                     bool is_ephemeral = false, bool is_sequential = false) {
         auto r = ConfigType::exists_path_sync(path);
         if (ConfigType::is_no_error(r) && !is_sequential) {
             return cb(true, path);
