@@ -57,8 +57,3 @@ struct get_children_userdata : user_data {
 		: wfn(f), children_completion(c), cb(std::move(callbback)), self(ptr), path(p) {}
 };
 }  // namespace zk
-
-enum class call_type {
-	standard,  // keep the original behavior
-	advanced   // more convenient
-};

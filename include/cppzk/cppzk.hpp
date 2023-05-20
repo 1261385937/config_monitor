@@ -102,7 +102,7 @@ public:
         return {};
     }
 
-    template <call_type CallType = call_type::advanced>
+    template <bool Advanced = true>
     zk_error create_path(std::string_view path, std::string_view value, zk_create_mode mode,
                          create_callback ccb, int64_t ttl = -1,
                          zk_acl acl = zk_acl::zk_open_acl_unsafe) {
@@ -116,7 +116,7 @@ public:
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
 
-        if constexpr (CallType == call_type::advanced) {
+        if constexpr (Advanced) {
             auto sp_path = split_path(path);
             std::string new_path;
             for (size_t i = 0; i < sp_path.size() - 1; ++i) {
@@ -176,7 +176,7 @@ public:
     }
 
     // [create/delete/changed] event just for current path
-    template <call_type CallType = call_type::advanced>
+    template <bool Advanced = true>
     zk_error exists_path(std::string_view path, exists_callback ecb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto eud = (exists_userdata*)watcherCtx;
@@ -201,13 +201,13 @@ public:
             if (d->cb) {
                 d->cb((zk_error)rc, d->eve);
             }
-            if constexpr (CallType == call_type::standard) {
+            if constexpr (!Advanced) {
                 delete d;
             }
         };
 
         int r = 0;
-        if constexpr (CallType == call_type::advanced) {
+        if constexpr (Advanced) {
             auto data = std::make_shared<exists_userdata>(
                 wfn, exists_completion, std::move(ecb), this, path);
             r = zoo_awexists(zh_, path.data(), wfn, data.get(), exists_completion, data.get());
@@ -226,7 +226,7 @@ public:
     }
 
     // [changed] event just for current path, if the path exists all the time
-    template <call_type CallType = call_type::advanced>
+    template <bool Advanced = true>
     zk_error get_path_value(std::string_view path, get_callback gcb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto d = static_cast<wget_userdata*>(watcherCtx);
@@ -254,13 +254,13 @@ public:
                 std::optional<std::string> dummy;
                 d->cb((zk_error)rc, value ? std::string(value, value_len) : std::move(dummy));
             }
-            if constexpr (CallType == call_type::standard) {
+            if constexpr (!Advanced) {
                 delete d;
             }
         };
 
         int r = 0;
-        if constexpr (CallType == call_type::advanced) {
+        if constexpr (Advanced) {
             auto data = std::make_shared<wget_userdata>(wfn, cb, std::move(gcb), this, path);
             r = zoo_awget(zh_, path.data(), wfn, data.get(), cb, data.get());
             std::lock_guard<std::mutex> lock(mtx_);
@@ -278,7 +278,7 @@ public:
     }
 
     // [create/delete] sub path event just for current path, if the path exists all the time
-    template <call_type CallType = call_type::advanced>
+    template <bool Advanced = true>
     zk_error get_sub_path(std::string_view path, get_children_callback gccb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto d = static_cast<get_children_userdata*>(watcherCtx);
@@ -316,13 +316,13 @@ public:
                 }
                 d->cb((zk_error)rc, d->eve, std::move(children_path));
             }
-            if constexpr (CallType == call_type::standard) {
+            if constexpr (!Advanced) {
                 delete d;
             }
         };
 
         int r = 0;
-        if constexpr (CallType == call_type::advanced) {
+        if constexpr (Advanced) {
             auto data = std::make_shared<get_children_userdata>(
                 wfn, children_completion, std::move(gccb), this, path);
             r = zoo_awget_children2(zh_, path.data(), wfn, data.get(),
@@ -351,7 +351,7 @@ private:
                     interval < 3000 ? interval : 3000));
                 if (need_detect_) {
                     // make network interaction
-                    get_path_value<call_type::standard>("/zookeeper", nullptr);
+                    get_path_value<false>("/zookeeper", nullptr);
                 }
                 if (!is_conntected_) {
                     std::unique_lock<std::mutex> lock(mtx_);
