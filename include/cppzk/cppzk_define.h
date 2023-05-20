@@ -59,6 +59,6 @@ struct get_children_userdata : user_data {
 }  // namespace zk
 
 enum class call_type {
-	standard,  // just watch once
-	advanced   // rewatch
+	standard,  // keep the original behavior
+	advanced   // more convenient
 };

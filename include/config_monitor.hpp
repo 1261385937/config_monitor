@@ -27,7 +27,7 @@ template <typename T>																		\
 struct has_##FUN<T, std::enable_if_t<std::is_member_function_pointer_v<decltype(&T::FUN)>>> \
 : std::true_type {};																		\
 template <class T>																			\
-constexpr bool has_##FUN##_v = has_##FUN<T>::value;
+constexpr bool has_##FUN##_v = has_##FUN<T>::value; 
 
 HAS_MEMBER(set_expired_cb);
 HAS_MEMBER(get_client_ip);
@@ -50,7 +50,7 @@ class config_monitor : public ConfigType {
 public:
     using watch_cb = std::function<void(path_event, std::string&&)>;
     using operate_cb = std::function<void(bool)>;
-    using create_cb = std::function<void(bool, std::string_view)>;
+    using create_cb = std::function<void(bool, std::string&&)>;
 
 private:
     // key is main path
@@ -73,8 +73,6 @@ public:
     void init(Args&&... args) {
         if constexpr (has_set_expired_cb_v<ConfigType>) {
             ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
-                printf("session expired, then reconnect");
-
                 ConfigType::clear_resource();
                 last_sub_path_.clear();
                 this->callable([this](auto&&... args) {
@@ -202,31 +200,10 @@ public:
 
     void create_path(std::string_view path, create_cb cb, std::string_view value = "",
                      bool is_ephemeral = false, bool is_sequential = false) {
-        auto r = ConfigType::exists_path_sync(path);
-        if (ConfigType::is_no_error(r) && !is_sequential) {
-            return cb(true, path);
-        }
         auto create_mode = ConfigType::get_create_mode(is_ephemeral, is_sequential);
-
-        auto sp_path = split_path(path);
-        if (sp_path.size() == 1) {
-            ConfigType::create_path(
-                path, value, create_mode, [cb, this](auto e, std::string&& path) {
-                if (cb) {
-                    cb(ConfigType::is_no_error(e) ? true : false, path);
-                }
-            });
-            return;
-        }
-
-        std::string new_path;
-        for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-            ConfigType::create_path_sync(sp_path[i], "", ConfigType::get_persistent_mode(), new_path);
-        }
-        ConfigType::create_path(
-            sp_path.back(), value, create_mode, [cb, this](auto e, std::string&& path) {
+        ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
             if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false, path);
+                cb(ConfigType::is_no_error(e) ? true : false, std::move(path));
             }
         });
     }
@@ -254,55 +231,6 @@ public:
     }
 
 private:
-    std::deque<std::string> split_path(std::string_view path) {
-        auto c = std::count(path.begin(), path.end(), '/');
-        std::deque<std::string> split_path;
-        if (c == 0) {
-            throw std::invalid_argument("no / found in path");
-        }
-        if (c == 1) {
-            split_path.emplace_front(path);
-            return split_path;
-        }
-
-        auto src_path = path;
-        auto pos = path.find_last_of('/');
-        while (pos != std::string_view::npos) {
-            path = path.substr(0, pos);
-            split_path.emplace_front(path);
-            pos = path.find_last_of('/');
-        }
-        split_path.pop_front();
-        split_path.emplace_back(src_path);
-        return split_path;
-    }
-
-    template <size_t PathDepth>
-    constexpr decltype(auto) split_path(std::string_view path) {
-        if constexpr (PathDepth == 1) {
-            std::array<std::string_view, PathDepth> self_path;
-            self_path[0] = path;
-            return self_path;
-        }
-        else {
-            std::array<std::string_view, PathDepth> p;
-            auto end = path.find_last_of('/');
-            size_t i = 0;
-            while (end != std::string_view::npos) {
-                p[i] = path.substr(0, end);
-                path = path.substr(0, end);
-                end = path.find_last_of('/');
-                i++;
-            }
-
-            std::array<std::string_view, PathDepth - 1> sp_path;
-            for (size_t j = 0; j < PathDepth - 1; ++j) {
-                sp_path[j] = p[j];
-            }
-            return sp_path;
-        }
-    }
-
     template <typename F, typename Tuple, std::size_t... I>
     constexpr void callable(F&& f, Tuple&& tuple, std::index_sequence<I...>) {
         f(std::get<I>(std::forward<Tuple>(tuple))...);
