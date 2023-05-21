@@ -131,6 +131,7 @@ public:
     }
 
     // [create/delete/changed] event just for current path
+    template <bool Advanced = true>
     void exists_path(std::string_view path, exists_callback ecb) {
         auto existed = std::filesystem::exists(path);
         if (!existed) {
@@ -140,37 +141,47 @@ public:
             add_task([ecb]() { ecb(file_error::ok, file_event::dummy_event); });
         }
 
-        auto p = std::string(path);
-        std::unique_lock lock(task_mtx_);
-        monitor_exist_path_.emplace(p, std::move(ecb));
-        last_existed_status_.emplace(std::move(p), existed);
+        if constexpr (Advanced) {
+            auto p = std::string(path);
+            std::unique_lock lock(task_mtx_);
+            monitor_exist_path_.emplace(p, std::move(ecb));
+            last_existed_status_.emplace(std::move(p), existed);
+        }
     }
 
     // [changed] event just for current path, if the path exists all the time
+    template <bool Advanced = true>
     void get_path_value(std::string_view path, get_callback gcb) {
-        auto existed = std::filesystem::exists(path);
-        if (!existed) {
+        auto [err, value] = get_file_value(path);
+        if (err != file_error::ok) {
             return add_task([gcb]() { gcb(file_error::not_exist, {}); });
         }
+        add_task([gcb, v = std::move(value)]() mutable { gcb(file_error::ok, std::move(v)); });
 
-        auto p = std::string(path);
-        std::unique_lock lock(task_mtx_);
-        monitor_get_path_.emplace(p, std::move(gcb));
-        last_changed_time_.emplace(std::move(p), 0); // 0 means triggering extra get_callback once
+        if constexpr (Advanced) {
+            auto [_, timestamp] = file_modify_time(path);
+            auto p = std::string(path);
+            std::unique_lock lock(task_mtx_);
+            monitor_get_path_.emplace(p, std::move(gcb));
+            last_changed_time_.emplace(std::move(p), timestamp);
+        }
     }
 
     // [create/delete] sub path event just for current path, if the path exists all the time
+    template <bool Advanced = true>
     void get_sub_path(std::string_view path, get_children_callback gccb) {
         auto existed = std::filesystem::exists(path);
         if (!existed) {
             return add_task([gccb]() { gccb(file_error::not_exist, file_event::dummy_event, {}); });
         }
 
-        auto p = std::string(path);
-        std::unique_lock lock(task_mtx_);
-        monitor_sub_path_.emplace(p, std::move(gccb));
-        // empty path_children means triggering extra get_children_callback once
-        last_path_children_.emplace(std::move(p), std::deque<std::string>{});
+        if constexpr (Advanced) {
+            auto children = get_path_children(path);
+            auto p = std::string(path);
+            std::unique_lock lock(task_mtx_);
+            monitor_sub_path_.emplace(p, std::move(gccb));
+            last_path_children_.emplace(std::move(p), std::move(children));
+        }
     }
 
 protected:
