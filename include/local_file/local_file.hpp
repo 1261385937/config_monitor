@@ -175,12 +175,20 @@ public:
             return add_task([gccb]() { gccb(file_error::not_exist, file_event::dummy_event, {}); });
         }
 
+        auto children = get_path_children(path);
         if constexpr (Advanced) {
-            auto children = get_path_children(path);
+            add_task([gccb, children]() {
+                gccb(file_error::ok, file_event::dummy_event, std::move(children));
+            });
             auto p = std::string(path);
             std::unique_lock lock(task_mtx_);
             monitor_sub_path_.emplace(p, std::move(gccb));
             last_path_children_.emplace(std::move(p), std::move(children));
+        }
+        else {
+            add_task([gccb, ch = std::move(children)]() mutable {
+                gccb(file_error::ok, file_event::dummy_event, std::move(ch));
+            });
         }
     }
 
@@ -209,17 +217,8 @@ protected:
         return file_create_mode::persistent;
     }
 
-    auto get_create_mode(bool is_ephemeral, bool is_sequential) {
-        file_create_mode create_mode;
-        if (is_ephemeral) {
-            create_mode = is_sequential ?
-                file_create_mode::ephemeral_sequential : file_create_mode::ephemeral;
-        }
-        else {
-            create_mode = is_sequential ?
-                file_create_mode::persistent_sequential : file_create_mode::persistent;
-        }
-        return create_mode;
+    auto get_create_mode(int mode) {
+        return static_cast<file_create_mode>(mode);
     }
 
 private:
@@ -246,10 +245,6 @@ private:
     }
 
     file_error set_file_value(std::string_view path, std::string_view value) {
-        if (value.empty()) {
-            return file_error::ok;
-        }
-
         auto file = fopen(path.data(), "wb+");
         if (file == nullptr) {
             return file_error::not_exist;
@@ -290,7 +285,6 @@ private:
         std::deque<std::string> file;
         namespace sfs = std::filesystem;
         for (auto& dir_entry : sfs::directory_iterator{ sfs::path(path) }) {
-
             if (dir_entry.is_regular_file()) {
                 file.emplace_back(dir_entry.path().filename().string());
                 continue;

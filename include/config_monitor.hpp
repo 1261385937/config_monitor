@@ -42,6 +42,15 @@ enum class watch_type {
     watch_sub_path
 };
 
+enum class create_mode {
+    persistent = 0,
+    ephemeral = 1,
+    persistent_sequential = 2,
+    ephemeral_sequential = 3,
+    persistent_with_ttl = 5,
+    persistent_sequential_with_ttl = 6
+};
+
 template <typename>
 inline constexpr bool always_false_v = false;
 
@@ -49,6 +58,7 @@ template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
     using watch_cb = std::function<void(path_event, std::string&&)>;
+    using mapping_watch_cb = std::function<void(path_event, std::string_view, std::string&&)>;
     using operate_cb = std::function<void(bool)>;
     using create_cb = std::function<void(bool, std::string&&)>;
 
@@ -57,6 +67,7 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string>> last_sub_path_;
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> sub_path_value_;
     std::unordered_map<std::string, std::unordered_map<watch_type, watch_cb>> record_;
+    std::unordered_map<std::string, std::pair<watch_type, mapping_watch_cb>> mapping_record_;
     std::mutex record_mtx_;
 
 public:
@@ -83,18 +94,49 @@ public:
                 if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
                     std::unique_lock<std::mutex> lock(record_mtx_);
                     auto record = std::move(record_);
+                    auto mapping_record = std::move(mapping_record_);
                     lock.unlock();
-                    for (const auto& r : record) {
-                        for (const auto& type_cb : r.second) {
-                            type_cb.first == watch_type::watch_path ?
-                                async_watch_path(r.first, type_cb.second) :
-                                async_watch_sub_path(r.first, type_cb.second);
+                    for (auto& [path, pair] : record) {
+                        for (auto& [watch_type, cb] : pair) {
+                            watch_type == watch_type::watch_path ?
+                                async_watch_path(path, std::move(cb)) :
+                                async_watch_sub_path<false>(path, std::move(cb));
                         }
+                    }
+                    //Here just watch_sub_path
+                    for (auto& [path, pair] : mapping_record) {
+                        async_watch_sub_path(path, std::move(pair.second));
                     }
                 }
             });
         }
         ConfigType::initialize(std::forward<Args>(args)...);
+    }
+
+    auto create_path(std::string_view path, std::string_view value = "",
+                     create_mode mode = create_mode::persistent) {
+        auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
+        std::promise<std::string> pro;
+        ConfigType::create_path(path, value, create_mode, [this, &pro](auto, std::string&& path) {
+            pro.set_value(std::move(path));
+        });
+        return pro.get_future().get();
+    }
+
+    auto set_path_value(std::string_view path, std::string_view value) {
+        std::promise<bool> pro;
+        ConfigType::set_path_value(path, value, [this, &pro](auto e) {
+            pro.set_value(ConfigType::is_no_error(e) ? true : false);
+        });
+        return pro.get_future().get();
+    }
+
+    auto del_path(std::string_view path) {
+        std::promise<bool> pro;
+        ConfigType::delete_path(path, [this, &pro](auto e) {
+            pro.set_value(ConfigType::is_no_error(e) ? true : false);
+        });
+        return pro.get_future().get();
     }
 
     auto watch_path(std::string_view path) {
@@ -106,6 +148,65 @@ public:
             pro.set_value(std::move(value.value()));
         });
         return pro.get_future().get();
+    }
+
+    template<bool Mapping = true>
+    auto watch_sub_path(std::string_view path) {
+        using sub_paths_type = std::conditional_t<std::is_same_v<ConfigType, zk::cppzk>,
+            std::vector<std::string>, std::deque<std::string>>;
+        std::promise<sub_paths_type> pro;
+        ConfigType::get_sub_path<false>(path, [&pro](auto, auto, auto&& sub_paths) {
+            if (sub_paths.empty()) {
+                return pro.set_value({});
+            }
+            pro.set_value(std::move(sub_paths));
+        });
+
+        auto sub_paths = pro.get_future().get();
+        std::vector<std::string> values;
+        values.reserve(sub_paths.size());
+        for (auto& sub_path : sub_paths) {
+            values.emplace_back(watch_path(sub_path));
+        }
+
+        if constexpr (Mapping) {
+            std::unordered_map<std::string, std::string> path_values;
+            size_t index = 0;
+            for (auto& sub_path : sub_paths) {
+                path_values.emplace(std::move(sub_path), std::move(values[index]));
+                index++;
+            }
+            return path_values;
+        }
+        else {
+            return values;
+        }
+    }
+
+    void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
+                           create_mode mode = create_mode::persistent) {
+        auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
+        ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
+            if (cb) {
+                cb(ConfigType::is_no_error(e) ? true : false, std::move(path));
+            }
+        });
+    }
+
+    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
+        ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
+            if (cb) {
+                cb(ConfigType::is_no_error(e) ? true : false);
+            }
+        });
+    }
+
+    void async_del_path(std::string_view path, operate_cb callback) {
+        ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
+            if (cb) {
+                cb(ConfigType::is_no_error(e) ? true : false);
+            }
+        });
     }
 
     void async_watch_path(std::string_view path, watch_cb cb) {
@@ -134,57 +235,60 @@ public:
         });
     }
 
-    auto watch_sub_path(std::string_view path) {
-
-    }
-
-    void async_watch_sub_path(std::string_view path, watch_cb cb) {
+    template<
+        bool Mapping = true,
+        typename WatchCb = std::conditional_t<Mapping, mapping_watch_cb, watch_cb>
+    >
+    void async_watch_sub_path(std::string_view path, WatchCb&& cb) {
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
-            record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
+            if constexpr (Mapping) {
+                mapping_record_[std::string(path)] = { watch_type::watch_sub_path, cb };
+            }
+            else {
+                record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
+            }
             lock.unlock();
         }
 
-        ConfigType::exists_path(
-            path, [this, cb, main_path = std::string(path)](auto err, auto eve) {
-            bool has_parent_path = false;
-            if (ConfigType::is_no_error(err) &&
-                (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve))) {
-                has_parent_path = true;
+        auto main_path = std::string(path);
+        auto monitor_path = [this, cb, main_path](const std::string& sub_path) {
+            ConfigType::get_path_value(
+                sub_path, [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
+                if (ConfigType::is_no_error(e) && value.has_value()) {  // changed
+                    if constexpr (Mapping) {
+                        cb(path_event::changed, sub_path, std::move(value.value()));
+                    }
+                    else {
+                        sub_path_value_[main_path][sub_path] = value.value();
+                        cb(path_event::changed, std::move(value.value()));
+                    }
+                    return;
+                }
+
+                if (ConfigType::is_no_node(e)) {  // del
+                    if constexpr (Mapping) {
+                        cb(path_event::del, sub_path, {});
+                    }
+                    else {
+                        cb(path_event::del, std::move(sub_path_value_[main_path][sub_path]));
+                        sub_path_value_[main_path].erase(sub_path);
+                    }
+                }
+            });
+        };
+
+        ConfigType::exists_path(path, [this, main_path, monitor_path](auto err, auto eve) {
+            if (!ConfigType::is_no_error(err)) {
+                return;
             }
-            if (!has_parent_path) {
+            if (!ConfigType::is_dummy_event(eve) && !ConfigType::is_create_event(eve)) {
                 return;
             }
 
-            auto monitor_path = [this, cb, main_path](const std::string& sub_path) {
-                ConfigType::get_path_value(
-                    sub_path,
-                    [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
-                    if (ConfigType::is_no_error(e) && value.has_value()) {  // changed
-                        sub_path_value_[main_path][sub_path] = value.value();
-                        cb(path_event::changed, std::move(value.value()));
-                        return;
-                    }
-
-                    if (ConfigType::is_no_node(e)) {  // del
-                        auto it = sub_path_value_.find(main_path);
-                        if (it == sub_path_value_.end()) {
-                            return cb(path_event::del, {});
-                        }
-                        auto iter = it->second.find(sub_path);
-                        if (iter == it->second.end()) {
-                            return cb(path_event::del, {});
-                        }
-                        cb(path_event::del, std::move(iter->second));
-                        it->second.erase(iter);
-                    }
-                });
-            };
-
             ConfigType::get_sub_path(
-                main_path,
-                [this, cb, main_path, monitor_path](auto e, auto, auto&& sub_paths) {
-                if (!ConfigType::is_no_error(e)) {
+                main_path, [this, main_path, monitor_path](auto err, auto, auto&& sub_paths) {
+                if (!ConfigType::is_no_error(err)) {
                     return;
                 }
 
@@ -199,45 +303,19 @@ public:
                     last_sub_path_.emplace(main_path, std::move(sub_paths_set));
                     return;
                 }
-                // the new paths
+                // che new paths
                 for (auto&& sub_path : sub_paths) {
                     if (it->second.find(sub_path) != it->second.end()) {  // exist
                         continue;
                     }
                     monitor_path(main_path + "/" + sub_path);
                 }
-
+                //Replace the old sub_paths_set
                 for (auto&& sub_path : sub_paths) {
                     sub_paths_set.emplace(std::move(sub_path));
                 }
                 last_sub_path_[main_path] = std::move(sub_paths_set);
             });
-        });
-    }
-
-    void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
-                     bool is_ephemeral = false, bool is_sequential = false) {
-        auto create_mode = ConfigType::get_create_mode(is_ephemeral, is_sequential);
-        ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
-            if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false, std::move(path));
-            }
-        });
-    }
-
-    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
-        ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false);
-            }
-        });
-    }
-
-    void async_del_path(std::string_view path, operate_cb callback) {
-        ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false);
-            }
         });
     }
 

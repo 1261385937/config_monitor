@@ -125,8 +125,10 @@ public:
             }
         }
 
+        auto value_ptr = value.empty() ? nullptr : value.data();
+        auto value_len = value.empty() ? 0 : (int)value.length();
         auto r = zoo_acreate2_ttl(
-            zh_, path.data(), value.data(), (int)value.length(), &acl_mapping[acl], (int)mode, ttl,
+            zh_, path.data(), value_ptr, value_len, &acl_mapping[acl], (int)mode, ttl,
             [](int rc, const char* string, const struct Stat*, const void* data) {
             auto cb = (create_callback*)data;
             if ((*cb)) {
@@ -468,17 +470,8 @@ protected:
         return zk_create_mode::zk_persistent;
     }
 
-    auto get_create_mode(bool is_ephemeral, bool is_sequential) {
-        zk_create_mode create_mode;
-        if (is_ephemeral) {
-            create_mode = is_sequential ?
-                zk::zk_create_mode::zk_ephemeral_sequential : zk::zk_create_mode::zk_ephemeral;
-        }
-        else {
-            create_mode = is_sequential ?
-                zk::zk_create_mode::zk_persistent_sequential : zk::zk_create_mode::zk_persistent;
-        }
-        return create_mode;
+    auto get_create_mode(int mode) {
+        return static_cast<zk_create_mode>(mode);
     }
 };
 }  // namespace zk
