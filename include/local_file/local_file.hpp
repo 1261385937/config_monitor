@@ -316,7 +316,7 @@ private:
 
             //last status is existed, this time not existed.
             if (last_status == true) {
-                monitor_exist_path[path](file_error::ok, file_event::deleted_event);
+                monitor_exist_path[path](file_error::not_exist, file_event::deleted_event);
                 continue;
             }
             //last status is not existed, this time existed.
@@ -339,6 +339,7 @@ private:
             auto [err, value] = get_file_value(path);
             if (err != file_error::ok) {
                 //file removed
+                monitor_get_path[path](file_error::not_exist, {});
                 remove_monitor_get_path(path);
                 continue;
             }

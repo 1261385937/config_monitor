@@ -87,8 +87,8 @@ public:
                     for (const auto& r : record) {
                         for (const auto& type_cb : r.second) {
                             type_cb.first == watch_type::watch_path ?
-                                watch_path(r.first, type_cb.second) :
-                                watch_sub_path(r.first, type_cb.second);
+                                async_watch_path(r.first, type_cb.second) :
+                                async_watch_sub_path(r.first, type_cb.second);
                         }
                     }
                 }
@@ -97,7 +97,18 @@ public:
         ConfigType::initialize(std::forward<Args>(args)...);
     }
 
-    void watch_path(std::string_view path, watch_cb cb) {
+    auto watch_path(std::string_view path) {
+        std::promise<std::string> pro;
+        ConfigType::get_path_value<false>(path, [&pro](auto, std::optional<std::string>&& value) {
+            if (!value.has_value()) {
+                return pro.set_value({});
+            }
+            pro.set_value(std::move(value.value()));
+        });
+        return pro.get_future().get();
+    }
+
+    void async_watch_path(std::string_view path, watch_cb cb) {
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
             record_[std::string(path)].emplace(watch_type::watch_path, cb);
@@ -105,23 +116,29 @@ public:
         }
 
         ConfigType::exists_path(path, [this, cb, p = std::string(path)](auto err, auto eve) {
-            if (ConfigType::is_no_error(err) &&
-                (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve))) {
-                ConfigType::get_path_value(
-                    p, [cb, this](auto err, std::optional<std::string>&& value) {
+            if (!ConfigType::is_no_error(err)) {
+                return;
+            }
+
+            if (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve)) {
+                ConfigType::get_path_value(p, [cb, this](auto err, auto&& value) {
+                    if (ConfigType::is_no_node(err)) {
+                        //watch_path do not need content when del event, the mapping is explicit
+                        return cb(path_event::del, {});
+                    }
                     if (ConfigType::is_no_error(err) && value.has_value()) {
                         cb(path_event::changed, std::move(value.value()));
                     }
                 });
-                return;
-            }
-            if (ConfigType::is_no_node(err) && ConfigType::is_delete_event(eve)) {
-                cb(path_event::del, {});
             }
         });
     }
 
-    void watch_sub_path(std::string_view path, watch_cb cb) {
+    auto watch_sub_path(std::string_view path) {
+
+    }
+
+    void async_watch_sub_path(std::string_view path, watch_cb cb) {
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
             record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
@@ -198,7 +215,7 @@ public:
         });
     }
 
-    void create_path(std::string_view path, create_cb cb, std::string_view value = "",
+    void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
                      bool is_ephemeral = false, bool is_sequential = false) {
         auto create_mode = ConfigType::get_create_mode(is_ephemeral, is_sequential);
         ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
@@ -208,7 +225,7 @@ public:
         });
     }
 
-    void set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
+    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
         ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
             if (cb) {
                 cb(ConfigType::is_no_error(e) ? true : false);
@@ -216,7 +233,7 @@ public:
         });
     }
 
-    void del_path(std::string_view path, operate_cb callback) {
+    void async_del_path(std::string_view path, operate_cb callback) {
         ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
             if (cb) {
                 cb(ConfigType::is_no_error(e) ? true : false);
