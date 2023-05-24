@@ -58,7 +58,7 @@ template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
     using watch_cb = std::function<void(path_event, std::string&&)>;
-    using mapping_watch_cb = std::function<void(path_event, std::string_view, std::string&&)>;
+    using mapping_watch_cb = std::function<void(path_event, std::string&&, std::string_view)>;
     using operate_cb = std::function<void(bool)>;
     using create_cb = std::function<void(bool, std::string&&)>;
 
@@ -80,6 +80,11 @@ public:
         return cm;
     }
 
+    /**
+     * @brief Initialize the ConfigType and set session expire callback if has
+     * @tparam ...Args
+     * @param ...args According to the ConfigType
+    */
     template <typename... Args>
     void init(Args&&... args) {
         if constexpr (has_set_expired_cb_v<ConfigType>) {
@@ -113,6 +118,15 @@ public:
         ConfigType::initialize(std::forward<Args>(args)...);
     }
 
+    /**
+     * @brief Sync create full path.
+     * If the path depth more than 1, the prefix path will be created automatically.
+     *
+     * @param path The full path need to be created
+     * @param value The path initial value when created
+     * @param mode Default is persistent path
+     * @return [std::error_code, path_name], a new path name if mode is sequential
+    */
     auto create_path(std::string_view path, std::string_view value = "",
                      create_mode mode = create_mode::persistent) {
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
@@ -123,6 +137,12 @@ public:
         return pro.get_future().get();
     }
 
+    /**
+     * @brief Sync change a path value
+     * @param path The target path
+     * @param value The changed value
+     * @return std::error_code
+    */
     auto set_path_value(std::string_view path, std::string_view value) {
         std::promise<bool> pro;
         ConfigType::set_path_value(path, value, [this, &pro](auto e) {
@@ -131,6 +151,13 @@ public:
         return pro.get_future().get();
     }
 
+    /**
+     * @brief Sync delete the path.
+     * If the path depth more than 1, the prefix path (include their sub path) will aslo be deleted.
+     *
+     * @param path The target path
+     * @return std::error_code
+    */
     auto del_path(std::string_view path) {
         std::promise<bool> pro;
         ConfigType::delete_path(path, [this, &pro](auto e) {
@@ -139,6 +166,11 @@ public:
         return pro.get_future().get();
     }
 
+    /**
+     * @brief Sync get the path value just once. Path must be existed.
+     * @param path The target path
+     * @return [std::error_code, value]
+    */
     auto watch_path(std::string_view path) {
         std::promise<std::string> pro;
         ConfigType::get_path_value<false>(path, [&pro](auto, std::optional<std::string>&& value) {
@@ -150,6 +182,13 @@ public:
         return pro.get_future().get();
     }
 
+    /**
+     * @brief Sync get children path value of the target path just once. Path must be existed.
+     * @tparam Mapping Enable mapping or not. If enable, [subpath, value] mapping will be return.
+     * @param path The target path
+     * @return
+     * [std::error_code, std::vector<std::string> or std::unordered_map<std::string, std::string>]
+    */
     template<bool Mapping = true>
     auto watch_sub_path(std::string_view path) {
         using sub_paths_type = std::conditional_t<std::is_same_v<ConfigType, zk::cppzk>,
@@ -183,6 +222,15 @@ public:
         }
     }
 
+    /**
+     * @brief Async create full path.
+     * If the path depth more than 1, the prefix path will be created automatically.
+     *
+     * @param path The full path need to be created
+     * @param cb Callback, 2th arg is a new path name if mode is sequential
+     * @param value Set the path initial value when created
+     * @param mode Default is persistent path
+    */
     void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
                            create_mode mode = create_mode::persistent) {
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
@@ -193,6 +241,12 @@ public:
         });
     }
 
+    /**
+     * @brief Async change a path value if path exist
+     * @param path The target path
+     * @param value The changed value
+     * @param callback
+    */
     void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
         ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
             if (cb) {
@@ -201,6 +255,13 @@ public:
         });
     }
 
+    /**
+     * @brief Async delete the path.
+     * If the path depth more than 1, the prefix path (include their sub path) will aslo be deleted.
+     *
+     * @param path The target path
+     * @param callback
+    */
     void async_del_path(std::string_view path, operate_cb callback) {
         ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
             if (cb) {
@@ -209,6 +270,14 @@ public:
         });
     }
 
+    /**
+     * @brief Async get the path value.
+     * Also valid for a non existed path. The monitor will start after the target path is created.
+     *
+     * @param path The target path
+     * @param cb Callback, 2th arg is changed value.
+     * If the event is del, then the changed value must be empty.
+    */
     void async_watch_path(std::string_view path, watch_cb cb) {
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
@@ -235,6 +304,17 @@ public:
         });
     }
 
+    /**
+     * @brief Async get children path value of the target path.
+     * Also valid for a non existed path. The monitor will start after the target path is created.
+     *
+     * @tparam WatchCb
+     * @tparam Mapping Enable mapping or not.
+     * @param path The target path
+     * @param cb Callback, 2th arg is changed value.
+     * If disable mapping, for del event, changed value is last time value.
+     * If enable mapping, the extra 3th arg is children path. For del event, 2th arg is awalys empty
+    */
     template<
         bool Mapping = true,
         typename WatchCb = std::conditional_t<Mapping, mapping_watch_cb, watch_cb>
@@ -257,7 +337,7 @@ public:
                 sub_path, [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
                 if (ConfigType::is_no_error(e) && value.has_value()) {  // changed
                     if constexpr (Mapping) {
-                        cb(path_event::changed, sub_path, std::move(value.value()));
+                        cb(path_event::changed, std::move(value.value()), sub_path);
                     }
                     else {
                         sub_path_value_[main_path][sub_path] = value.value();
@@ -268,7 +348,7 @@ public:
 
                 if (ConfigType::is_no_node(e)) {  // del
                     if constexpr (Mapping) {
-                        cb(path_event::del, sub_path, {});
+                        cb(path_event::del, {}, sub_path);
                     }
                     else {
                         cb(path_event::del, std::move(sub_path_value_[main_path][sub_path]));
@@ -319,6 +399,10 @@ public:
         });
     }
 
+    /**
+     * @brief Get self ip with the session
+     * @return Self ip
+    */
     auto client_ip() {
         if constexpr (has_get_client_ip_v<ConfigType>) {
             return ConfigType::get_client_ip();
