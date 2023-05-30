@@ -205,7 +205,7 @@ public:
         std::vector<std::string> values;
         values.reserve(sub_paths.size());
         for (auto& sub_path : sub_paths) {
-            values.emplace_back(watch_path(sub_path));
+            values.emplace_back(watch_path(std::string(path) + "/" + sub_path));
         }
 
         if constexpr (Mapping) {
