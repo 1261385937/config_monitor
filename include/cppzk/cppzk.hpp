@@ -446,6 +446,10 @@ private:
     }
 
 protected:
+    std::error_code make_error_code(zk_error err) {
+        return { static_cast<int>(err), zk::category() };
+    }
+
     bool is_no_error(zk_error err) {
         return err == zk_error::zk_ok;
     }
