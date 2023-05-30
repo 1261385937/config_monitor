@@ -2,7 +2,7 @@
 #include <functional>
 #include <optional>
 #include "cppzk_redeclare.h"
-#include "zookeeper/zookeeper.h"
+#include "zookeeper.h"
 
 namespace zk {
 inline std::unordered_map<zk_acl, ACL_vector> acl_mapping{
