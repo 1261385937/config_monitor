@@ -13,7 +13,7 @@
 
 namespace loc {
 
-class local_file {
+class loc_file {
 public:
     using create_callback = std::function<void(file_error, std::string&&)>;
     using delete_callback = std::function<void(file_error)>;
@@ -76,7 +76,7 @@ public:
         });
     }
 
-    ~local_file() {
+    ~loc_file() {
         run_ = false;
         task_cv_.notify_one();
         if (task_thread_.joinable()) {
@@ -219,6 +219,10 @@ protected:
 
     auto get_create_mode(int mode) {
         return static_cast<file_create_mode>(mode);
+    }
+    
+    std::error_code make_error_code(file_error err) {
+        return { static_cast<int>(err), loc::category() };
     }
 
 private:
