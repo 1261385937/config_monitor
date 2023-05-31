@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string_view>
 #include <type_traits>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -59,8 +60,8 @@ class config_monitor : public ConfigType {
 public:
     using watch_cb = std::function<void(path_event, std::string&&)>;
     using mapping_watch_cb = std::function<void(path_event, std::string&&, std::string_view)>;
-    using operate_cb = std::function<void(bool)>;
-    using create_cb = std::function<void(bool, std::string&&)>;
+    using operate_cb = std::function<void(const std::error_code&)>;
+    using create_cb = std::function<void(const std::error_code&, std::string&&)>;
 
 private:
     // key is main path
@@ -130,9 +131,9 @@ public:
     auto create_path(std::string_view path, std::string_view value = "",
                      create_mode mode = create_mode::persistent) {
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-        std::promise<std::string> pro;
-        ConfigType::create_path(path, value, create_mode, [this, &pro](auto, std::string&& path) {
-            pro.set_value(std::move(path));
+        std::promise<std::pair<std::error_code, std::string>> pro;
+        ConfigType::create_path(path, value, create_mode, [this, &pro](auto e, std::string&& path) {
+            pro.set_value({ ConfigType::make_error_code(e), std::move(path) });
         });
         return pro.get_future().get();
     }
@@ -144,9 +145,9 @@ public:
      * @return std::error_code
     */
     auto set_path_value(std::string_view path, std::string_view value) {
-        std::promise<bool> pro;
+        std::promise<std::error_code> pro;
         ConfigType::set_path_value(path, value, [this, &pro](auto e) {
-            pro.set_value(ConfigType::is_no_error(e) ? true : false);
+            pro.set_value(ConfigType::make_error_code(e));
         });
         return pro.get_future().get();
     }
@@ -159,9 +160,9 @@ public:
      * @return std::error_code
     */
     auto del_path(std::string_view path) {
-        std::promise<bool> pro;
+        std::promise<std::error_code> pro;
         ConfigType::delete_path(path, [this, &pro](auto e) {
-            pro.set_value(ConfigType::is_no_error(e) ? true : false);
+            pro.set_value(ConfigType::make_error_code(e));
         });
         return pro.get_future().get();
     }
@@ -172,12 +173,11 @@ public:
      * @return [std::error_code, value]
     */
     auto watch_path(std::string_view path) {
-        std::promise<std::string> pro;
-        ConfigType::get_path_value<false>(path, [&pro](auto, std::optional<std::string>&& value) {
-            if (!value.has_value()) {
-                return pro.set_value({});
-            }
-            pro.set_value(std::move(value.value()));
+        std::promise<std::pair<std::error_code, std::string>> pro;
+        ConfigType::template get_path_value<false>(
+            path, [this, &pro](auto e, std::optional<std::string>&& value) {
+            pro.set_value({ ConfigType::make_error_code(e),
+                          value.has_value() ? std::move(value.value()) : std::string{} });
         });
         return pro.get_future().get();
     }
@@ -193,32 +193,46 @@ public:
     auto watch_sub_path(std::string_view path) {
         using sub_paths_type = std::conditional_t<std::is_same_v<ConfigType, zk::cppzk>,
             std::vector<std::string>, std::deque<std::string>>;
-        std::promise<sub_paths_type> pro;
-        ConfigType::get_sub_path<false>(path, [&pro](auto, auto, auto&& sub_paths) {
-            if (sub_paths.empty()) {
-                return pro.set_value({});
-            }
-            pro.set_value(std::move(sub_paths));
+        std::promise<std::pair<std::error_code, sub_paths_type>> pro;
+        ConfigType::template get_sub_path<false>(path, [this, &pro](auto e, auto, auto&& sub_paths) {
+            pro.set_value({ ConfigType::make_error_code(e), std::move(sub_paths) });
         });
 
-        auto sub_paths = pro.get_future().get();
         std::vector<std::string> values;
-        values.reserve(sub_paths.size());
-        for (auto& sub_path : sub_paths) {
-            values.emplace_back(watch_path(std::string(path) + "/" + sub_path));
+        std::unordered_map<std::string, std::string> mapping_values;
+        auto [ec, sub_paths] = pro.get_future().get();
+        if (ec) {
+            if constexpr (Mapping) {
+                return std::pair{ ec, mapping_values };
+            }
+            else {
+                return std::pair{ ec, values };
+            }
         }
 
-        if constexpr (Mapping) {
-            std::unordered_map<std::string, std::string> path_values;
+        auto children_size = sub_paths.size();
+        values.reserve(children_size);
+        for (auto it = sub_paths.begin(); it != sub_paths.end();) {
+            auto [er, value] = watch_path(std::string(path) + "/" + *it);
+            if (!er) {
+                values.emplace_back(std::move(value));
+                ++it;   
+            }
+            else {
+                it = sub_paths.erase(it);
+            }     
+        }
+
+        if constexpr (Mapping) {        
             size_t index = 0;
             for (auto& sub_path : sub_paths) {
-                path_values.emplace(std::move(sub_path), std::move(values[index]));
+                mapping_values.emplace(std::move(sub_path), std::move(values[index]));
                 index++;
             }
-            return path_values;
+            return std::pair{ ec, std::move(mapping_values) };
         }
         else {
-            return values;
+            return std::pair{ ec, std::move(values) };
         }
     }
 
@@ -236,7 +250,7 @@ public:
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
         ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
             if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false, std::move(path));
+                cb(ConfigType::make_error_code(e), std::move(path));
             }
         });
     }
@@ -250,7 +264,7 @@ public:
     void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
         ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
             if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false);
+                cb(ConfigType::make_error_code(e));
             }
         });
     }
@@ -265,7 +279,7 @@ public:
     void async_del_path(std::string_view path, operate_cb callback) {
         ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
             if (cb) {
-                cb(ConfigType::is_no_error(e) ? true : false);
+                cb(ConfigType::make_error_code(e));
             }
         });
     }
