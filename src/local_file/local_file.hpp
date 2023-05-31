@@ -177,7 +177,7 @@ public:
 
         auto children = get_path_children(path);
         if constexpr (Advanced) {
-            add_task([gccb, children]() {
+            add_task([gccb, children]() mutable{
                 gccb(file_error::ok, file_event::dummy_event, std::move(children));
             });
             auto p = std::string(path);
