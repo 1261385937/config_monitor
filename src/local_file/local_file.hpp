@@ -204,9 +204,10 @@ public:
             }
             else { //sub-path
                 remove_monitor_exist_path(p);
+                remove_monitor_sub_path(p);
                 auto children = get_path_children(p);
                 for (const auto& child : children) {
-                    remove_monitor_get_path(child);
+                    remove_monitor_get_path(p + "/" + child);
                 }
             }
             cb(file_error::ok);
@@ -302,6 +303,12 @@ private:
         monitor_exist_path_.erase(path);
     }
 
+    void remove_monitor_sub_path(const std::string& path) {
+        std::unique_lock lock(task_mtx_);
+        last_path_children_.erase(path);
+        monitor_sub_path_.erase(path);
+    }
+
     void update_last_existed_status(const std::string& path, bool status) {
         std::unique_lock lock(task_mtx_);
         last_existed_status_[path] = status;
@@ -315,7 +322,13 @@ private:
     std::deque<std::string> get_path_children(std::string_view path) {
         std::deque<std::string> file;
         namespace sfs = std::filesystem;
-        for (auto& dir_entry : sfs::directory_iterator{ sfs::path(path) }) {
+        std::error_code ec;
+        auto dirs = sfs::directory_iterator{ sfs::path(path), ec };
+        if (ec) {
+            return file;
+        }
+
+        for (auto& dir_entry : dirs) {
             if (dir_entry.is_regular_file()) {
                 file.emplace_back(dir_entry.path().filename().string());
                 continue;

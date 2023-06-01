@@ -59,7 +59,7 @@ template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
     using watch_cb = std::function<void(path_event, std::string&&)>;
-    using mapping_watch_cb = std::function<void(path_event, std::string&&, std::string_view)>;
+    using mapping_watch_cb = std::function<void(path_event, std::string&&, const std::string&)>;
     using operate_cb = std::function<void(const std::error_code&)>;
     using create_cb = std::function<void(const std::error_code&, std::string&&)>;
 
