@@ -112,7 +112,11 @@ public:
 
     void delete_path(std::string_view path, delete_callback dcb) {
         add_task([p = std::string(path), callback = std::move(dcb)]() {
-            std::filesystem::remove_all(p);
+            std::error_code ec;
+            std::filesystem::remove_all(p, ec);
+            if (ec) {         
+                return callback(file_error::already_used);
+            }
             callback(file_error::ok);
         });
     }
@@ -190,6 +194,23 @@ public:
                 gccb(file_error::ok, file_event::dummy_event, std::move(ch));
             });
         }
+    }
+
+    void remove_watches(std::string_view path, int watch_type, delete_callback cb) {
+        add_task([cb, watch_type, this, p = std::string(path)]() {
+            if (watch_type == 0) {
+                remove_monitor_exist_path(p);
+                remove_monitor_get_path(p);
+            }
+            else { //sub-path
+                remove_monitor_exist_path(p);
+                auto children = get_path_children(p);
+                for (const auto& child : children) {
+                    remove_monitor_get_path(child);
+                }
+            }
+            cb(file_error::ok);
+        });
     }
 
 protected:
@@ -273,6 +294,12 @@ private:
         std::unique_lock lock(task_mtx_);
         last_changed_time_.erase(path);
         monitor_get_path_.erase(path);
+    }
+
+    void remove_monitor_exist_path(const std::string& path) {
+        std::unique_lock lock(task_mtx_);
+        last_existed_status_.erase(path);
+        monitor_exist_path_.erase(path);
     }
 
     void update_last_existed_status(const std::string& path, bool status) {

@@ -285,6 +285,21 @@ public:
     }
 
     /**
+     * @brief Async remove the watch, the path event will not be triggered.
+     * @param path The target path
+     * @param type Watch type, path or sub-path
+     * @param callback 
+    */
+    void async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
+        ConfigType::remove_watches(
+            path, static_cast<int>(type), [this, cb = std::move(callback)](auto e) {
+            if (cb) {
+                cb(ConfigType::make_error_code(e));
+            }
+        });
+    }
+
+    /**
      * @brief Async get the path value.
      * Also valid for a non existed path. The monitor will start after the target path is created.
      *

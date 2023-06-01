@@ -6,7 +6,8 @@ namespace loc {
 enum class file_error {
     ok,
     not_exist,
-    already_exist
+    already_exist,
+    already_used
 };
 
 enum class file_event {
