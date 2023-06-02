@@ -258,6 +258,142 @@ TEST_F(local_file_test, async_watch_sub_path_original_mapping) {
     EXPECT_EQ(value3, mapping_values[path3]);
 };
 
+
+TEST_F(local_file_test, async_watch_sub_path_not_exist_then_create_no_mapping) {
+    std::string path1 = async_main_path + "/" + "44.log";
+    std::string value1 = "xxx";
+    std::string path2 = async_main_path + "/" + "55.log";
+    std::string value2 = "yyy";
+    std::string path3 = async_main_path + "/" + "66.log";
+    std::string value3 = "zzz";
+
+    std::thread([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        cm::config_monitor<loc::loc_file>::instance().create_path(path1, value1);
+        cm::config_monitor<loc::loc_file>::instance().create_path(path2, value2);
+        cm::config_monitor<loc::loc_file>::instance().create_path(path3, value3);
+    }).detach();
+
+    auto pro = std::make_shared<std::promise<cm::path_event>>();
+    std::set<std::string> values;
+    cm::config_monitor<loc::loc_file>::instance().async_watch_sub_path(
+        async_main_path, [&pro, &values](cm::path_event eve, std::string&& value, const std::string& path) {
+        values.emplace(std::move(value));
+        if (values.size() == 3) {
+            pro->set_value(eve);
+        }
+    });
+    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
+    EXPECT_EQ(values.find(value1) != values.end(), true);
+    EXPECT_EQ(values.find(value2) != values.end(), true);
+    EXPECT_EQ(values.find(value3) != values.end(), true);
+};
+
+//TEST_F(local_file_test, async_watch_sub_path_not_exist_then_create_mapping) {
+//    std::string async_test_path_value = "5201314";
+//    std::thread([this, async_test_path_value]() {
+//        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//        cm::config_monitor<loc::loc_file>::instance().create_path(
+//            async_test_path, async_test_path_value);
+//    }).detach();
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    auto pro = std::make_shared<delay_type>();
+//    cm::config_monitor<loc::loc_file>::instance().async_watch_path(
+//        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+//        pro->set_value({ eve , std::move(value) });
+//    });
+//    auto [eve0, value0] = pro->get_future().get();
+//    EXPECT_EQ(eve0, cm::path_event::changed);
+//    EXPECT_EQ(value0, async_test_path_value);
+//};
+//
+//TEST_F(local_file_test, async_watch_sub_path_change_value_no_mapping) {
+//    std::string async_test_path_value = "5201314";
+//    cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path, async_test_path_value);
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<loc::loc_file>::instance().async_watch_path(
+//        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value) });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    std::string new_value = "this is changed test";
+//    cm::config_monitor<loc::loc_file>::instance().set_path_value(async_test_path, new_value);
+//    auto [eve1, value1] = pro->get_future().get();
+//    EXPECT_EQ(eve1, cm::path_event::changed);
+//    EXPECT_EQ(value1, new_value);
+//};
+//
+//TEST_F(local_file_test, async_watch_sub_path_change_value_mapping) {
+//    std::string async_test_path_value = "5201314";
+//    cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path, async_test_path_value);
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<loc::loc_file>::instance().async_watch_path(
+//        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value) });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    std::string new_value = "this is changed test";
+//    cm::config_monitor<loc::loc_file>::instance().set_path_value(async_test_path, new_value);
+//    auto [eve1, value1] = pro->get_future().get();
+//    EXPECT_EQ(eve1, cm::path_event::changed);
+//    EXPECT_EQ(value1, new_value);
+//};
+//
+//TEST_F(local_file_test, async_watch_sub_path_delete_path_no_mapping) {
+//    std::string async_test_path_value = "5201314";
+//    cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path, async_test_path_value);
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<loc::loc_file>::instance().async_watch_path(
+//        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value) });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    cm::config_monitor<loc::loc_file>::instance().del_path(async_test_path);
+//    auto [eve2, value2] = pro->get_future().get();
+//    EXPECT_EQ(eve2, cm::path_event::del);
+//    EXPECT_EQ(value2, "");
+//};
+//
+//TEST_F(local_file_test, async_watch_sub_path_delete_path_mapping) {
+//    std::string async_test_path_value = "5201314";
+//    cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path, async_test_path_value);
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<loc::loc_file>::instance().async_watch_path(
+//        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value) });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    cm::config_monitor<loc::loc_file>::instance().del_path(async_test_path);
+//    auto [eve2, value2] = pro->get_future().get();
+//    EXPECT_EQ(eve2, cm::path_event::del);
+//    EXPECT_EQ(value2, "");
+//};
+
 TEST_F(local_file_test, async_del_path) {
     std::string delete_test_path = "./async_test_sub_path";
     cm::config_monitor<loc::loc_file>::instance().create_path(delete_test_path + "/test.log");
