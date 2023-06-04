@@ -18,6 +18,7 @@ using delete_callback = std::function<void(zk_error)>;
 using exists_callback = std::function<void(zk_error, zk_event)>;
 using get_callback = std::function<void(zk_error, std::optional<std::string>&&)>;
 using get_children_callback = std::function<void(zk_error, zk_event, std::vector<std::string>&&)>;
+using recursive_get_children_callback = std::function<void(zk_error, std::deque<std::string>&&)>;
 
 class cppzk;
 struct user_data {};

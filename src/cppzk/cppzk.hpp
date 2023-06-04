@@ -396,6 +396,39 @@ private:
         session_timeout_ms_ = zoo_recv_timeout(zh_);  // get the actual value
     }
 
+protected:
+    std::error_code make_error_code(zk_error err) {
+        return { static_cast<int>(err), zk::category() };
+    }
+
+    bool is_no_error(zk_error err) {
+        return err == zk_error::zk_ok;
+    }
+
+    bool is_no_node(zk_error err) {
+        return err == zk_error::zk_no_node;
+    }
+
+    bool is_dummy_event(zk_event eve) {
+        return eve == zk_event::zk_dummy_event;
+    }
+
+    bool is_create_event(zk_event eve) {
+        return eve == zk_event::zk_created_event;
+    }
+
+    bool is_delete_event(zk_event eve) {
+        return eve == zk_event::zk_deleted_event;
+    }
+
+    auto get_persistent_mode() {
+        return zk_create_mode::zk_persistent;
+    }
+
+    auto get_create_mode(int mode) {
+        return static_cast<zk_create_mode>(mode);
+    }
+
     std::deque<std::string> split_path(std::string_view path) {
         auto c = std::count(path.begin(), path.end(), '/');
         std::deque<std::string> split_path;
@@ -445,37 +478,24 @@ private:
         }
     }
 
-protected:
-    std::error_code make_error_code(zk_error err) {
-        return { static_cast<int>(err), zk::category() };
+    void recursive_get_sub_path(std::string_view path, std::deque<std::string>& sub_paths) {
+        std::promise<std::vector<std::string>> pro;
+        get_sub_path<false>(path, [&pro](zk_error, zk_event, std::vector<std::string>&& children) {
+            if (children.empty()) {
+                return pro.set_value({});
+            }
+            pro.set_value(std::move(children));
+        });
+        auto children = pro.get_future().get();
+
+        auto p = std::string(path);
+        for (auto& child : children) {
+            auto full = p + "/" + child;
+            recursive_get_sub_path(full, sub_paths);
+            sub_paths.emplace_back(std::move(full));
+        }
     }
 
-    bool is_no_error(zk_error err) {
-        return err == zk_error::zk_ok;
-    }
 
-    bool is_no_node(zk_error err) {
-        return err == zk_error::zk_no_node;
-    }
-
-    bool is_dummy_event(zk_event eve) {
-        return eve == zk_event::zk_dummy_event;
-    }
-
-    bool is_create_event(zk_event eve) {
-        return eve == zk_event::zk_created_event;
-    }
-
-    bool is_delete_event(zk_event eve) {
-        return eve == zk_event::zk_deleted_event;
-    }
-
-    auto get_persistent_mode() {
-        return zk_create_mode::zk_persistent;
-    }
-
-    auto get_create_mode(int mode) {
-        return static_cast<zk_create_mode>(mode);
-    }
 };
 }  // namespace zk
