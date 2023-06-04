@@ -113,6 +113,12 @@ public:
     void delete_path(std::string_view path, delete_callback dcb) {
         add_task([p = std::string(path), callback = std::move(dcb)]() {
             std::error_code ec;
+            auto exist = std::filesystem::exists(p);
+            if (!exist) {
+                callback(file_error::not_exist);
+                return;
+            }
+
             std::filesystem::remove_all(p, ec);
             if (ec) {         
                 return callback(file_error::already_used);
@@ -321,9 +327,9 @@ private:
 
     std::deque<std::string> get_path_children(std::string_view path) {
         std::deque<std::string> file;
-        namespace sfs = std::filesystem;
+        namespace fs = std::filesystem;
         std::error_code ec;
-        auto dirs = sfs::directory_iterator{ sfs::path(path), ec };
+        auto dirs = fs::directory_iterator{ fs::path(path), ec };
         if (ec) {
             return file;
         }
