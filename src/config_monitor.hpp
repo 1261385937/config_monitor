@@ -153,14 +153,28 @@ public:
     }
 
     /**
-     * @brief Sync delete the path.
-     * If the path depth more than 1, the prefix path (include their sub path) will aslo be deleted.
+     * @brief Sync delete the path (include their sub path).
      *
      * @param path The target path
      * @return std::error_code
     */
     auto del_path(std::string_view path) {
         std::promise<std::error_code> pro;
+        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+            std::deque<std::string> sub_paths;
+            ConfigType::recursive_get_sub_path(path, sub_paths);
+            for (auto& sub : sub_paths) {
+                std::promise<std::error_code> pro_sub;
+                ConfigType::delete_path(sub, [this, &pro_sub](auto e) {
+                    pro_sub.set_value(ConfigType::make_error_code(e));
+                });
+                auto ec_s = pro_sub.get_future().get();
+                if (ec_s) {
+                    return std::move(ec_s);
+                }
+            }
+        }
+
         ConfigType::delete_path(path, [this, &pro](auto e) {
             pro.set_value(ConfigType::make_error_code(e));
         });
@@ -216,14 +230,14 @@ public:
             auto [er, value] = watch_path(std::string(path) + "/" + *it);
             if (!er) {
                 values.emplace_back(std::move(value));
-                ++it;   
+                ++it;
             }
             else {
                 it = sub_paths.erase(it);
-            }     
+            }
         }
 
-        if constexpr (Mapping) {        
+        if constexpr (Mapping) {
             size_t index = 0;
             for (auto& sub_path : sub_paths) {
                 mapping_values.emplace(std::move(sub_path), std::move(values[index]));
@@ -270,8 +284,7 @@ public:
     }
 
     /**
-     * @brief Async delete the path.
-     * If the path depth more than 1, the prefix path (include their sub path) will aslo be deleted.
+     * @brief Async delete the path (include their sub path).
      *
      * @param path The target path
      * @param callback
@@ -288,11 +301,28 @@ public:
      * @brief Async remove the watch, the path event will not be triggered.
      * @param path The target path
      * @param type Watch type, path or sub-path
-     * @param callback 
+     * @param callback
     */
     void async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
         ConfigType::remove_watches(
-            path, static_cast<int>(type), [this, cb = std::move(callback)](auto e) {
+            path, static_cast<int>(type),
+            [this, type, p = std::string(path), cb = std::move(callback)](auto e) {
+            last_sub_path_.erase(p);
+            sub_path_value_.erase(p);
+            if (type == watch_type::watch_path) {
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                record_.erase(p);
+            }
+            else { //sub-path
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                mapping_record_.erase(p);
+                if (auto it = record_.find(p); it != record_.end()) {
+                    if (it->second.find(type) != it->second.end()) {
+                        it->second.erase(type);
+                    }
+                }
+            }
+
             if (cb) {
                 cb(ConfigType::make_error_code(e));
             }
