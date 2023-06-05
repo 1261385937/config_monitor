@@ -138,7 +138,6 @@ TEST_F(local_file_test, del_not_exist_path) {
 };
 
 
-
 TEST_F(local_file_test, async_create_path) {
     std::promise<std::pair<std::error_code, std::string>> pro;
     cm::config_monitor<loc::loc_file>::instance().async_create_path(
@@ -148,6 +147,19 @@ TEST_F(local_file_test, async_create_path) {
     auto [ec, new_path] = pro.get_future().get();
     EXPECT_EQ(ec.value(), 0);
     EXPECT_EQ(new_path, async_test_path);
+};
+
+TEST_F(local_file_test, async_create_exist_path) {
+    cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path);
+
+    std::promise<std::pair<std::error_code, std::string>> pro;
+    cm::config_monitor<loc::loc_file>::instance().async_create_path(
+        async_test_path, [&pro](const std::error_code& ec, std::string&& path) {
+        pro.set_value({ ec, std::move(path) });
+    });
+    auto [ec, new_path] = pro.get_future().get();
+    EXPECT_FALSE(ec.value() == 0);
+    EXPECT_EQ(new_path, "");
 };
 
 TEST_F(local_file_test, async_set_path_value) {
@@ -162,7 +174,17 @@ TEST_F(local_file_test, async_set_path_value) {
     EXPECT_EQ(pro.get_future().get().value(), 0);
 };
 
-TEST_F(local_file_test, async_watch_path_original) {
+TEST_F(local_file_test, async_set_not_exist_path_value) {
+    std::string async_test_path_value = "5201314";
+    std::promise<std::error_code> pro;
+    cm::config_monitor<loc::loc_file>::instance().async_set_path_value(
+        async_test_path, async_test_path_value, [&pro](const std::error_code& ec) {
+        pro.set_value(ec);
+    });
+    EXPECT_FALSE(pro.get_future().get().value() == 0);
+};
+
+TEST_F(local_file_test, async_watch_path) {
     std::string async_test_path_value = "5201314";
     cm::config_monitor<loc::loc_file>::instance().create_path(async_test_path, async_test_path_value);
 
@@ -239,7 +261,7 @@ TEST_F(local_file_test, async_watch_path_delete_path) {
     EXPECT_EQ(value2, "");
 };
 
-TEST_F(local_file_test, async_watch_sub_path_original_no_mapping) {
+TEST_F(local_file_test, async_watch_sub_path_no_mapping) {
     std::string sub_path1 = "1.log";
     std::string value1 = "111";
     std::string sub_path2 = "2.log";
@@ -268,7 +290,7 @@ TEST_F(local_file_test, async_watch_sub_path_original_no_mapping) {
     EXPECT_EQ(values.find(value3) != values.end(), true);
 };
 
-TEST_F(local_file_test, async_watch_sub_path_original_mapping) {
+TEST_F(local_file_test, async_watch_sub_path_mapping) {
     std::string path1 = async_main_path + "/" + "11.log";
     std::string value1 = "xxx";
     std::string path2 = async_main_path + "/" + "12.log";
@@ -294,7 +316,6 @@ TEST_F(local_file_test, async_watch_sub_path_original_mapping) {
     EXPECT_EQ(value2, mapping_values[path2]);
     EXPECT_EQ(value3, mapping_values[path3]);
 };
-
 
 TEST_F(local_file_test, async_watch_sub_path_not_exist_then_create_no_mapping) {
     std::string path1 = async_main_path + "/" + "44.log";

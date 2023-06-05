@@ -16,6 +16,8 @@ protected:
     std::string test_path = "/test";
     inline static bool is_init_ = false;
 
+    std::string async_test_path = "/async_test";
+
 public:
     static void SetUpTestSuite() {
         //GetParam();
@@ -33,7 +35,14 @@ public:
     }
 
     void TearDown() override {
+        std::promise<std::error_code> pro1;
+        cm::config_monitor<zk::cppzk>::instance().async_remove_watches(
+            async_test_path, cm::watch_type::watch_path, [&pro1](const std::error_code& ec) {
+            pro1.set_value(ec);
+        });
+        pro1.get_future().get();
         cm::config_monitor<zk::cppzk>::instance().del_path(test_path);
+        cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
     }
 };
 
@@ -105,16 +114,16 @@ TEST_P(cppzk_test, watch_sub_path) {
     cm::config_monitor<zk::cppzk>::instance().del_path(main_path);
 };
 
-//TEST_P(cppzk_test, watch_sub_path_not_exist_main_path) {
-//    std::string main_path = "/test_sub_path";
-//    auto [ec, values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path<false>(main_path);
-//    EXPECT_FALSE(ec.value() == 0);
-//    EXPECT_EQ(values.size(), 0);
-//
-//    auto [ec1, mapping_values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path(main_path);
-//    EXPECT_FALSE(ec1.value() == 0);
-//    EXPECT_EQ(mapping_values.size(), 0);
-//};
+TEST_P(cppzk_test, watch_sub_path_not_exist_main_path) {
+    std::string main_path = "/test_sub_path";
+    auto [ec, values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path<false>(main_path);
+    EXPECT_FALSE(ec.value() == 0);
+    EXPECT_EQ(values.size(), 0);
+
+    auto [ec1, mapping_values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path(main_path);
+    EXPECT_FALSE(ec1.value() == 0);
+    EXPECT_EQ(mapping_values.size(), 0);
+};
 
 TEST_P(cppzk_test, del_path) {
     std::string main_path = "/delete_test";
@@ -146,5 +155,68 @@ TEST_P(cppzk_test, del_not_exist_path) {
     EXPECT_EQ(!ec, false);
 };
 
+
+TEST_P(cppzk_test, async_create_path) {
+    std::promise<std::pair<std::error_code, std::string>> pro;
+    cm::config_monitor<zk::cppzk>::instance().async_create_path(
+        async_test_path, [&pro](const std::error_code& ec, std::string&& path) {
+        pro.set_value({ ec, std::move(path) });
+    });
+    auto [ec, new_path] = pro.get_future().get();
+    EXPECT_EQ(ec.value(), 0);
+    EXPECT_EQ(new_path, async_test_path);
+};
+
+TEST_P(cppzk_test, async_create_exist_path) {
+    cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path);
+
+    std::promise<std::pair<std::error_code, std::string>> pro;
+    cm::config_monitor<zk::cppzk>::instance().async_create_path(
+        async_test_path, [&pro](const std::error_code& ec, std::string&& path) {
+        pro.set_value({ ec, std::move(path) });
+    });
+    auto [ec, new_path] = pro.get_future().get();
+    EXPECT_FALSE(ec.value() == 0);
+    EXPECT_EQ(new_path, "");
+};
+
+TEST_P(cppzk_test, async_set_path_value) {
+    std::string async_test_path_value = "5201314";
+    cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path);
+
+    std::promise<std::error_code> pro;
+    cm::config_monitor<zk::cppzk>::instance().async_set_path_value(
+        async_test_path, async_test_path_value, [&pro](const std::error_code& ec) {
+        pro.set_value(ec);
+    });
+    EXPECT_EQ(pro.get_future().get().value(), 0);
+};
+
+TEST_P(cppzk_test, async_set_not_exist_path_value) {
+    std::string async_test_path_value = "5201314";
+    std::promise<std::error_code> pro;
+    cm::config_monitor<zk::cppzk>::instance().async_set_path_value(
+        async_test_path, async_test_path_value, [&pro](const std::error_code& ec) {
+        pro.set_value(ec);
+    });
+    EXPECT_FALSE(pro.get_future().get().value() == 0);
+};
+
+TEST_P(cppzk_test, async_watch_path) {
+    std::string async_test_path_value = "5201314";
+    cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, async_test_path_value);
+
+    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+    auto pro = std::make_shared<delay_type>();
+    cm::config_monitor<zk::cppzk>::instance().async_watch_path(
+        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+        pro->set_value({ eve , std::move(value) });
+    });
+    auto [eve0, value0] = pro->get_future().get();
+    EXPECT_EQ(eve0, cm::path_event::changed);
+    EXPECT_EQ(value0, async_test_path_value);
+};
+
+
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
-                         ::testing::Values(zk_info{ "192.168.3.163:2181", 40000 }));
+                         ::testing::Values(zk_info{ "192.168.152.137:2181", 40000 }));
