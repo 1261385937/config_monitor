@@ -41,6 +41,7 @@ public:
             pro1.set_value(ec);
         });
         pro1.get_future().get();
+
         cm::config_monitor<zk::cppzk>::instance().del_path(test_path);
         cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
     }
@@ -215,8 +216,10 @@ TEST_P(cppzk_test, async_watch_path) {
     auto [eve0, value0] = pro->get_future().get();
     EXPECT_EQ(eve0, cm::path_event::changed);
     EXPECT_EQ(value0, async_test_path_value);
+
+  
 };
 
 
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
-                         ::testing::Values(zk_info{ "192.168.152.137:2181", 40000 }));
+                         ::testing::Values(zk_info{ "192.168.3.163:2181", 40000 }));

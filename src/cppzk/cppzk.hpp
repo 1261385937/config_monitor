@@ -344,6 +344,24 @@ public:
         return (zk_error)r;
     }
 
+    zk_error remove_watches(std::string_view path, int watch_type, delete_callback cb) {
+        void_completion_t completion = [](int rc, const void* data) {
+            auto cb = (delete_callback*)data;
+            if ((*cb)) {
+                (*cb)((zk_error)rc);
+            }
+            delete cb;
+        };
+        auto data = new delete_callback(std::move(cb));
+        auto r = zoo_aremove_all_watches(zh_, path.data(), watch_type == 0 ?
+                                ZooWatcherType::ZWATCHTYPE_DATA : ZooWatcherType::ZWATCHTYPE_CHILD,
+                                0, (void_completion_t*)completion, data);
+        if (r != ZOK) {
+            printf("remove_watches error: %s\n", zerror(r));
+        }
+        return (zk_error)r;
+    }
+
 private:
     void detect_expired_session() {
         detect_expired_thread_ = std::thread([this]() {
