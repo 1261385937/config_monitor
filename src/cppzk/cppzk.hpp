@@ -143,7 +143,16 @@ public:
         return (zk_error)r;
     }
 
+    template <bool Advanced = true>
     zk_error delete_path(std::string_view path, delete_callback dcb) {
+        if constexpr (Advanced) {
+            std::deque<std::string> sub_paths;
+            recursive_get_sub_path(path, sub_paths);
+            for (auto& sub : sub_paths) {
+                zoo_delete(zh_, sub.data(), -1);
+            }
+        }
+
         auto data = new delete_callback{ std::move(dcb) };
         auto r = zoo_adelete(zh_, path.data(), -1, [](int rc, const void* data) {
             auto cb = (delete_callback*)data;
@@ -353,9 +362,27 @@ public:
             delete cb;
         };
         auto data = new delete_callback(std::move(cb));
-        auto r = zoo_aremove_all_watches(zh_, path.data(), watch_type == 0 ?
-                                ZooWatcherType::ZWATCHTYPE_DATA : ZooWatcherType::ZWATCHTYPE_CHILD,
-                                0, (void_completion_t*)completion, data);
+        int r = 0;
+
+        if (watch_type == 1) { //sub_path
+            std::promise<std::vector<std::string>> pro;
+            get_sub_path<false>(path, [&pro](zk_error, zk_event, std::vector<std::string>&& children) {
+                pro.set_value(std::move(children));
+            });
+            auto sub_paths = pro.get_future().get();
+
+            for (auto& sub : sub_paths) {
+                auto full = std::string(path) + "/" + sub;
+                zoo_remove_all_watches(zh_, full.data(), ZooWatcherType::ZWATCHTYPE_DATA, 0);
+            }
+            r = zoo_aremove_all_watches(zh_, path.data(), ZWATCHTYPE_ANY, 0,
+                                        (void_completion_t*)completion, data);
+        }
+        else {
+            r = zoo_aremove_all_watches(zh_, path.data(), ZWATCHTYPE_DATA, 0,
+                                        (void_completion_t*)completion, data);
+        }
+
         if (r != ZOK) {
             printf("remove_watches error: %s\n", zerror(r));
         }
@@ -499,9 +526,6 @@ protected:
     void recursive_get_sub_path(std::string_view path, std::deque<std::string>& sub_paths) {
         std::promise<std::vector<std::string>> pro;
         get_sub_path<false>(path, [&pro](zk_error, zk_event, std::vector<std::string>&& children) {
-            if (children.empty()) {
-                return pro.set_value({});
-            }
             pro.set_value(std::move(children));
         });
         auto children = pro.get_future().get();

@@ -160,21 +160,6 @@ public:
     */
     auto del_path(std::string_view path) {
         std::promise<std::error_code> pro;
-        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-            std::deque<std::string> sub_paths;
-            ConfigType::recursive_get_sub_path(path, sub_paths);
-            for (auto& sub : sub_paths) {
-                std::promise<std::error_code> pro_sub;
-                ConfigType::delete_path(sub, [this, &pro_sub](auto e) {
-                    pro_sub.set_value(ConfigType::make_error_code(e));
-                });
-                auto ec_s = pro_sub.get_future().get();
-                if (ec_s) {
-                    return std::move(ec_s);
-                }
-            }
-        }
-
         ConfigType::delete_path(path, [this, &pro](auto e) {
             pro.set_value(ConfigType::make_error_code(e));
         });
@@ -317,9 +302,10 @@ public:
                 std::unique_lock<std::mutex> lock(record_mtx_);
                 mapping_record_.erase(p);
                 if (auto it = record_.find(p); it != record_.end()) {
-                    if (it->second.find(type) != it->second.end()) {
-                        it->second.erase(type);
-                    }
+                    it->second.erase(type);
+                    if (it->second.empty()) {
+                        record_.erase(it);
+                    }              
                 }
             }
 
