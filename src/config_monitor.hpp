@@ -8,6 +8,8 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <semaphore>
+#include "awaitable_transform.hpp"
 
 namespace zk {
 class cppzk;
@@ -130,12 +132,51 @@ public:
     */
     auto create_path(std::string_view path, std::string_view value = "",
                      create_mode mode = create_mode::persistent) {
+        std::binary_semaphore cond{0};
+        std::tuple<std::error_code, std::string> ret;
+        [this, &cond, &ret, path, value, mode]() ->coro::coroutine_task<void> {
+            auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
+            if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+                auto sp_path = ConfigType::split_path(path);
+                auto sp_mode = ConfigType::get_create_mode((int)create_mode::persistent);
+                for (size_t i = 0; i < sp_path.size() - 1; ++i) {
+                    co_await ConfigType::async_create_path(sp_path[i].data(), {}, sp_mode);
+                }
+            }
+            ret = co_await ConfigType::async_create_path(path, value, create_mode);
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
+    }
+
+    /**
+     * @brief Async create full path.
+     * If the path depth more than 1, the prefix path will be created automatically.
+     *
+     * @param path The full path need to be created
+     * @param cb Callback, 2th arg is a new path name if mode is sequential
+     * @param value Set the path initial value when created
+     * @param mode Default is persistent path
+    */
+    coro::coroutine_task<void> async_create_path(std::string_view path, create_cb cb, 
+                                                 std::string_view value = "",
+                                                 create_mode mode = create_mode::persistent) {
+        std::string p(path);
+        std::string v(value);
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-        std::promise<std::pair<std::error_code, std::string>> pro;
-        ConfigType::create_path(path, value, create_mode, [this, &pro](auto e, std::string&& path) {
-            pro.set_value({ ConfigType::make_error_code(e), std::move(path) });
-        });
-        return pro.get_future().get();
+        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+            auto sp_path = ConfigType::split_path(p);
+            auto sp_mode = ConfigType::get_create_mode((int)create_mode::persistent);
+            for (size_t i = 0; i < sp_path.size() - 1; ++i) {
+                co_await ConfigType::async_create_path(sp_path[i].data(), {}, sp_mode);
+            }
+        }
+
+        auto [ec, new_path] = co_await ConfigType::async_create_path(p, v, create_mode);
+        if (cb) {
+            cb(ec, std::move(new_path));
+        }
     }
 
     /**
@@ -235,24 +276,7 @@ public:
         }
     }
 
-    /**
-     * @brief Async create full path.
-     * If the path depth more than 1, the prefix path will be created automatically.
-     *
-     * @param path The full path need to be created
-     * @param cb Callback, 2th arg is a new path name if mode is sequential
-     * @param value Set the path initial value when created
-     * @param mode Default is persistent path
-    */
-    void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
-                           create_mode mode = create_mode::persistent) {
-        auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-        ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e), std::move(path));
-            }
-        });
-    }
+
 
     /**
      * @brief Async change a path value if path exist
@@ -305,7 +329,7 @@ public:
                     it->second.erase(type);
                     if (it->second.empty()) {
                         record_.erase(it);
-                    }              
+                    }
                 }
             }
 

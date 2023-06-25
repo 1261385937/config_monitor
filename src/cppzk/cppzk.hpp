@@ -19,6 +19,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include "../awaitable_transform.hpp"
 #include "cppzk_define.h"
 
 namespace zk {
@@ -102,11 +103,9 @@ public:
         return {};
     }
 
-    template <bool Advanced = true>
-    zk_error create_path(std::string_view path, std::string_view value, zk_create_mode mode,
+    void create_path(std::string_view path, std::string_view value, zk_create_mode mode,
                          create_callback ccb, int64_t ttl = -1,
                          zk_acl acl = zk_acl::zk_open_acl_unsafe) {
-        auto data = new create_callback{ std::move(ccb) };
         bool enable_ttl = false;
         if (mode == zk_create_mode::zk_persistent_sequential_with_ttl ||
             mode == zk_create_mode::zk_persistent_with_ttl) {
@@ -116,31 +115,28 @@ public:
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
 
-        if constexpr (Advanced) {
-            auto sp_path = split_path(path);
-            std::string new_path;
-            for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-                zoo_create2_ttl(zh_, sp_path[i].data(), nullptr, 0,
-                                &acl_mapping[acl], (int)mode, ttl, nullptr, 0, nullptr);
-            }
-        }
-
         auto value_ptr = value.empty() ? nullptr : value.data();
         auto value_len = value.empty() ? 0 : (int)value.length();
-        auto r = zoo_acreate2_ttl(
+        auto data = new create_callback{ std::move(ccb) };
+        zoo_acreate2_ttl(
             zh_, path.data(), value_ptr, value_len, &acl_mapping[acl], (int)mode, ttl,
             [](int rc, const char* string, const struct Stat*, const void* data) {
             auto cb = (create_callback*)data;
             if ((*cb)) {
-                (*cb)((zk_error)rc, string == nullptr ? std::string{} : std::string(string));
+                (*cb)(make_ec(rc), string == nullptr ? std::string{} : std::string(string));
             }
             delete cb;
         }, data);
+    }
 
-        if (r != ZOK) {
-            printf("create_path error: %s\n", zerror(r));
-        }
-        return (zk_error)r;
+    auto async_create_path(std::string_view path, std::string_view value, zk_create_mode mode,
+                           int64_t ttl = -1, zk_acl acl = zk_acl::zk_open_acl_unsafe) {
+        coro::awaitable<std::tuple<std::error_code, std::string>> awaiter;
+        create_path(path, value, mode, [&awaiter](const std::error_code& err, std::string&& value) {
+            awaiter.set_resume_value(std::make_tuple(err, std::move(value)));
+            awaiter.resume();
+        }, ttl, acl);
+        return awaiter;
     }
 
     template <bool Advanced = true>
@@ -441,9 +437,13 @@ private:
         session_timeout_ms_ = zoo_recv_timeout(zh_);  // get the actual value
     }
 
+    static std::error_code make_ec(int err) {
+        return { err, zk::category() };
+    }
+
 protected:
     std::error_code make_error_code(zk_error err) {
-        return { static_cast<int>(err), zk::category() };
+        return { (int)err, zk::category() };
     }
 
     bool is_no_error(zk_error err) {

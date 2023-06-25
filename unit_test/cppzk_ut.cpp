@@ -170,12 +170,14 @@ TEST_P(cppzk_test, del_not_exist_path) {
 TEST_P(cppzk_test, async_create_path) {
     std::promise<std::pair<std::error_code, std::string>> pro;
     cm::config_monitor<zk::cppzk>::instance().async_create_path(
-        async_test_path, [&pro](const std::error_code& ec, std::string&& path) {
+        async_test_path + "/1/2/3", [&pro](const std::error_code& ec, std::string&& path) {
         pro.set_value({ ec, std::move(path) });
-    });
+    }, "haha");
     auto [ec, new_path] = pro.get_future().get();
     EXPECT_EQ(ec.value(), 0);
-    EXPECT_EQ(new_path, async_test_path);
+    EXPECT_EQ(new_path, async_test_path + "/1/2/3");
+
+    cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
 };
 
 TEST_P(cppzk_test, async_create_exist_path) {
@@ -542,4 +544,4 @@ TEST_P(cppzk_test, async_del_path) {
 };
 
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
-                         ::testing::Values(zk_info{ "192.168.152.137:2181", 40000 }));
+                         ::testing::Values(zk_info{ "192.168.3.163:2181", 40000 }));

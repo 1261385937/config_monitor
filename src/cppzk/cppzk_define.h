@@ -12,7 +12,7 @@ inline std::unordered_map<zk_acl, ACL_vector> acl_mapping{
 };
 
 using expired_callback = std::function<void()>;
-using create_callback = std::function<void(zk_error, std::string&&)>;
+using create_callback = std::function<void(const std::error_code&, std::string&&)>;
 using set_callback = std::function<void(zk_error)>;
 using delete_callback = std::function<void(zk_error)>;
 using exists_callback = std::function<void(zk_error, zk_event)>;
