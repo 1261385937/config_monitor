@@ -130,7 +130,7 @@ public:
         case zk_error::zk_bad_arguments:
             return "bad arguments";
         case zk_error::zk_invalid_state:
-            "invalid zhandle state";
+            return "invalid zhandle state";
 
         case zk_error::zk_new_config_no_quorum:
             return  "no quorum of new config is connected "
