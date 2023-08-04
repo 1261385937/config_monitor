@@ -201,8 +201,8 @@ public:
     * @param value The changed value
     * @param callback
    */
-    coro::coro_task<> async_set_path_value(
-        std::string_view path, std::string_view value, operate_cb callback) {
+    coro::coro_task<> async_set_path_value(std::string_view path,
+        std::string_view value, operate_cb callback) {
         auto ec = co_await ConfigType::async_set_path_value(path, value);
         if (callback) {
             callback(ec);
@@ -241,25 +241,25 @@ public:
     /**
      * @brief Sync get children path value of the target path just once. Path must be existed.
      * @param path The target path
-     * @return
-     * [std::error_code, std::unordered_map<std::string, std::string>]
+     * @return [std::error_code, std::unordered_map<std::string, std::optional<std::string>>]
     */
     auto watch_sub_path(std::string_view path) {
         std::binary_semaphore cond{0};
-        std::tuple<std::error_code, std::unordered_map<std::string, std::string>> ret;
+        std::tuple<std::error_code, std::unordered_map<std::string, std::optional<std::string>>> ret;
         [this, &cond, &ret, path]() ->coro::coro_task<void> {
             auto [ec, sub_paths] = co_await ConfigType::async_get_sub_path(path);
-            std::unordered_map<std::string, std::string> mapping_values;
+            std::unordered_map<std::string, std::optional<std::string>> mapping_values;
             if (ec) {
                 ret = std::make_tuple(ec, mapping_values);
+                cond.release();
                 co_return;
             }
 
             for (auto it = sub_paths.begin(); it != sub_paths.end(); ++it) {
                 auto full_path = std::string(path) + "/" + *it;
-                auto [wec, value] = watch_path(full_path);
+                auto [wec, value] = co_await ConfigType::async_get_path_value(full_path);
                 if (!wec) {
-                    mapping_values.emplace(std::move(full_path), std::move(value));
+                    mapping_values.emplace(std::move(full_path), std::move(value)); 
                 }
             }
             ret = std::make_tuple(ec, mapping_values);
@@ -268,10 +268,6 @@ public:
         cond.acquire();
         return ret;
     }
-
-
-
-
 
     /**
      * @brief Async delete the path (include their sub path).

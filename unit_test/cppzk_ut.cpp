@@ -112,9 +112,9 @@ TEST_P(cppzk_test, watch_sub_path) {
     cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_, value3_);
 
     auto [ec, mapping_values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path(main_path);
-    EXPECT_EQ(value1_, mapping_values[sub_path1_]);
-    EXPECT_EQ(value2_, mapping_values[sub_path2_]);
-    EXPECT_EQ(value3_, mapping_values[sub_path3_]);
+    EXPECT_EQ(value1_, mapping_values[main_path + "/" + sub_path1_]);
+    EXPECT_EQ(value2_, mapping_values[main_path + "/" + sub_path2_]);
+    EXPECT_EQ(value3_, mapping_values[main_path + "/" + sub_path3_]);
 
     cm::config_monitor<zk::cppzk>::instance().del_path(main_path);
 };

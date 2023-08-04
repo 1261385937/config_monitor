@@ -280,6 +280,29 @@ public:
         return (zk_error)r;
     }
 
+
+    coro::coro_task<std::tuple<std::error_code, std::optional<std::string>>>
+        async_get_path_value(std::string_view path) {
+        using awaiter_type =
+            coro::value_awaiter<std::tuple<std::error_code, std::optional<std::string>>>;
+
+        auto cb = [](int rc, const char* value, int value_len, const struct Stat*, const void* data) {
+            std::optional<std::string> dummy = 
+                value ? std::string(value, value_len) : std::optional<std::string>();
+            auto awaiter = (awaiter_type*)data;
+            awaiter->set_resume_value(std::make_tuple(make_ec(rc), std::move(dummy)));
+            awaiter->resume();
+            delete awaiter;           
+        };
+   
+        auto awaiter = new awaiter_type();
+        auto r = zoo_awget(zh_, path.data(), nullptr, awaiter, cb, awaiter);
+        if (r != ZOK) {
+            throw std::runtime_error(std::string("zoo_awget error: ") + zerror(r));
+        }
+        co_return co_await(*awaiter);
+    }
+
     // [create/delete] sub path event just for current path, if the path exists all the time
     template <bool Advanced = true>
     zk_error get_sub_path(std::string_view path, get_children_callback gccb) {
@@ -348,20 +371,11 @@ public:
     //正常触发2次，测试点 先触发wfn删除，看children_completion是否还触发
     coro::coro_task<std::tuple<std::error_code, std::vector<std::string>>>
         async_get_sub_path(std::string_view path) {
-        using awaiter_type = coro::value_awaiter<std::tuple<std::error_code, std::vector<std::string>>>;
+        using awaiter_type = 
+            coro::value_awaiter<std::tuple<std::error_code, std::vector<std::string>>>;
 
-        auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
-            auto awaiter = (awaiter_type*)watcherCtx;
-            if (eve == ZOO_DELETED_EVENT) {
-                awaiter->set_resume_value(std::make_tuple(
-                    make_ec(ZOO_ERRORS::ZNONODE), std::vector<std::string>{}));
-                awaiter->resume();
-                delete awaiter;
-            }
-        };
         auto children_completion = [](int rc, const struct String_vector* strings,
-            const struct Stat*, const void* data) {
-            auto awaiter = (awaiter_type*)data;
+            const struct Stat*, const void* data) {         
             std::vector<std::string> children_path;
             if (strings) {
                 size_t count = strings->count;
@@ -370,13 +384,14 @@ public:
                     children_path.emplace_back(std::string(strings->data[i]));
                 }
             }
+            auto awaiter = (awaiter_type*)data;
             awaiter->set_resume_value(std::make_tuple(make_ec(rc), std::move(children_path)));
             awaiter->resume();
             delete awaiter;
         };
 
         auto awaiter = new awaiter_type();
-        auto r = zoo_awget_children2(zh_, path.data(), wfn, awaiter, children_completion, awaiter);
+        auto r = zoo_awget_children2(zh_, path.data(), nullptr, awaiter, children_completion, awaiter);
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_awget_children2 error: ") + zerror(r));
         }
