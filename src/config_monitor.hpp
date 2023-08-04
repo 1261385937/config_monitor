@@ -229,13 +229,14 @@ public:
      * @return [std::error_code, value]
     */
     auto watch_path(std::string_view path) {
-        std::promise<std::pair<std::error_code, std::string>> pro;
-        ConfigType::template get_path_value<false>(
-            path, [this, &pro](auto e, std::optional<std::string>&& value) {
-            pro.set_value({ ConfigType::make_error_code(e),
-                          value.has_value() ? std::move(value.value()) : std::string{} });
-        });
-        return pro.get_future().get();
+        std::binary_semaphore cond{0};
+        std::tuple<std::error_code, std::optional<std::string>> ret;
+        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+            ret = co_await ConfigType::async_get_path_value(path);
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
     }
 
     /**

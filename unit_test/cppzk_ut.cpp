@@ -95,7 +95,7 @@ TEST_P(cppzk_test, watch_path) {
 TEST_P(cppzk_test, watch_not_exist_path) {
     auto [ec, path_value] = cm::config_monitor<zk::cppzk>::instance().watch_path(test_path);
     EXPECT_FALSE(ec.value() == 0);
-    EXPECT_EQ(path_value, "");
+    EXPECT_EQ(!path_value.has_value(), true);
 };
 
 TEST_P(cppzk_test, watch_sub_path) {
