@@ -111,12 +111,6 @@ TEST_P(cppzk_test, watch_sub_path) {
     cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path2_, value2_);
     cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_, value3_);
 
-    auto [e, values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path<false>(main_path);
-    EXPECT_EQ(e.value(), 0);
-    EXPECT_EQ((values[0] == value1_) || (values[0] == value2_) || (values[0] == value3_), true);
-    EXPECT_EQ((values[1] == value1_) || (values[1] == value2_) || (values[1] == value3_), true);
-    EXPECT_EQ((values[2] == value1_) || (values[2] == value2_) || (values[2] == value3_), true);
-
     auto [ec, mapping_values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path(main_path);
     EXPECT_EQ(value1_, mapping_values[sub_path1_]);
     EXPECT_EQ(value2_, mapping_values[sub_path2_]);
@@ -126,10 +120,7 @@ TEST_P(cppzk_test, watch_sub_path) {
 };
 
 TEST_P(cppzk_test, watch_sub_path_not_exist_main_path) {
-    std::string main_path = "/test_sub_path";
-    auto [ec, values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path<false>(main_path);
-    EXPECT_FALSE(ec.value() == 0);
-    EXPECT_EQ(values.size(), 0);
+    std::string main_path = "/test_sub_path";  
 
     auto [ec1, mapping_values] = cm::config_monitor<zk::cppzk>::instance().watch_sub_path(main_path);
     EXPECT_FALSE(ec1.value() == 0);

@@ -134,7 +134,7 @@ public:
                      create_mode mode = create_mode::persistent) {
         std::binary_semaphore cond{0};
         std::tuple<std::error_code, std::string> ret;
-        [this, &cond, &ret, path, value, mode]() ->coro::coroutine_task<void> {
+        [this, &cond, &ret, path, value, mode]() ->coro::coro_task<void> {
             auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
             if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
                 auto sp_path = ConfigType::split_path(path);
@@ -159,9 +159,8 @@ public:
      * @param value Set the path initial value when created
      * @param mode Default is persistent path
     */
-    coro::coroutine_task<void> async_create_path(std::string_view path, create_cb cb, 
-                                                 std::string_view value = "",
-                                                 create_mode mode = create_mode::persistent) {
+    coro::coro_task<> async_create_path(std::string_view path, create_cb cb,
+        std::string_view value = "", create_mode mode = create_mode::persistent) {
         std::string p(path);
         std::string v(value);
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
@@ -186,11 +185,28 @@ public:
      * @return std::error_code
     */
     auto set_path_value(std::string_view path, std::string_view value) {
-        std::promise<std::error_code> pro;
-        ConfigType::set_path_value(path, value, [this, &pro](auto e) {
-            pro.set_value(ConfigType::make_error_code(e));
-        });
-        return pro.get_future().get();
+        std::binary_semaphore cond{0};
+        std::error_code ret;
+        [this, &cond, &ret, path, value]() ->coro::coro_task<void> {
+            ret = co_await ConfigType::async_set_path_value(path, value);
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
+    }
+
+    /**
+    * @brief Async change a path value if path exist
+    * @param path The target path
+    * @param value The changed value
+    * @param callback
+   */
+    coro::coro_task<> async_set_path_value(
+        std::string_view path, std::string_view value, operate_cb callback) {
+        auto ec = co_await ConfigType::async_set_path_value(path, value);
+        if (callback) {
+            callback(ec);
+        }
     }
 
     /**
@@ -224,73 +240,38 @@ public:
 
     /**
      * @brief Sync get children path value of the target path just once. Path must be existed.
-     * @tparam Mapping Enable mapping or not. If enable, [subpath, value] mapping will be return.
      * @param path The target path
      * @return
-     * [std::error_code, std::vector<std::string> or std::unordered_map<std::string, std::string>]
+     * [std::error_code, std::unordered_map<std::string, std::string>]
     */
-    template<bool Mapping = true>
     auto watch_sub_path(std::string_view path) {
-        using sub_paths_type = std::conditional_t<std::is_same_v<ConfigType, zk::cppzk>,
-            std::vector<std::string>, std::deque<std::string>>;
-        std::promise<std::pair<std::error_code, sub_paths_type>> pro;
-        ConfigType::template get_sub_path<false>(path, [this, &pro](auto e, auto, auto&& sub_paths) {
-            pro.set_value({ ConfigType::make_error_code(e), std::move(sub_paths) });
-        });
+        std::binary_semaphore cond{0};
+        std::tuple<std::error_code, std::unordered_map<std::string, std::string>> ret;
+        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+            auto [ec, sub_paths] = co_await ConfigType::async_get_sub_path(path);
+            std::unordered_map<std::string, std::string> mapping_values;
+            if (ec) {
+                ret = std::make_tuple(ec, mapping_values);
+                co_return;
+            }
 
-        std::vector<std::string> values;
-        std::unordered_map<std::string, std::string> mapping_values;
-        auto [ec, sub_paths] = pro.get_future().get();
-        if (ec) {
-            if constexpr (Mapping) {
-                return std::pair{ ec, mapping_values };
+            for (auto it = sub_paths.begin(); it != sub_paths.end(); ++it) {
+                auto full_path = std::string(path) + "/" + *it;
+                auto [wec, value] = watch_path(full_path);
+                if (!wec) {
+                    mapping_values.emplace(std::move(full_path), std::move(value));
+                }
             }
-            else {
-                return std::pair{ ec, values };
-            }
-        }
-
-        auto children_size = sub_paths.size();
-        values.reserve(children_size);
-        for (auto it = sub_paths.begin(); it != sub_paths.end();) {
-            auto [er, value] = watch_path(std::string(path) + "/" + *it);
-            if (!er) {
-                values.emplace_back(std::move(value));
-                ++it;
-            }
-            else {
-                it = sub_paths.erase(it);
-            }
-        }
-
-        if constexpr (Mapping) {
-            size_t index = 0;
-            for (auto& sub_path : sub_paths) {
-                mapping_values.emplace(std::move(sub_path), std::move(values[index]));
-                index++;
-            }
-            return std::pair{ ec, std::move(mapping_values) };
-        }
-        else {
-            return std::pair{ ec, std::move(values) };
-        }
+            ret = std::make_tuple(ec, mapping_values);
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
     }
 
 
 
-    /**
-     * @brief Async change a path value if path exist
-     * @param path The target path
-     * @param value The changed value
-     * @param callback
-    */
-    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
-        ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
+
 
     /**
      * @brief Async delete the path (include their sub path).
