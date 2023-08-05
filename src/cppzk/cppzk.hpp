@@ -104,7 +104,7 @@ public:
     }
 
     coro::coro_task<std::tuple<std::error_code, std::string>>
-        async_create_path(std::string_view path, std::string_view value,
+        async_create_path(std::string_view path, const std::optional<std::string>& value,
         zk_create_mode mode, int64_t ttl = -1, zk_acl acl = zk_acl::zk_open_acl_unsafe) {
         bool enable_ttl = false;
         if (mode == zk_create_mode::zk_persistent_sequential_with_ttl ||
@@ -115,8 +115,8 @@ public:
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
 
-        auto value_ptr = value.empty() ? nullptr : value.data();
-        auto value_len = value.empty() ? 0 : (int)value.length();
+        auto value_ptr = !value.has_value() ? nullptr : value.value().data();
+        auto value_len = !value.has_value() ? -1 : (int)value.value().length();
         using awaiter_type = coro::value_awaiter<std::tuple<std::error_code, std::string>>;
         auto awaiter = new awaiter_type();
         auto r = zoo_acreate2_ttl(zh_, path.data(), value_ptr, value_len, &acl_mapping[acl],
@@ -226,6 +226,26 @@ public:
             printf("exists_path error: %s\n", zerror(r));
         }
         return (zk_error)r;
+    }
+
+
+    coro::coro_task<zk_event>
+        async_exists_path(std::string_view path) {
+        using awaiter_type = coro::value_awaiter<zk_event>;   
+        auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
+            auto awaiter = (awaiter_type*)watcherCtx;
+            awaiter->set_resume_value((zk_event)eve);
+            awaiter->resume();
+            delete awaiter;
+        };
+        auto exists_completion = [](int, const struct Stat*, const void*) {};
+
+        auto awaiter = new awaiter_type();
+        auto r = zoo_awexists(zh_, path.data(), wfn, awaiter, exists_completion, nullptr);
+        if (r != ZOK) {
+            throw std::runtime_error(std::string("zoo_awexists error: ") + zerror(r));
+        }
+        co_return co_await(*awaiter);
     }
 
     // [changed] event just for current path, if the path exists all the time
@@ -513,6 +533,18 @@ protected:
 
     bool is_delete_event(zk_event eve) {
         return eve == zk_event::zk_deleted_event;
+    }
+
+    bool is_changed_event(zk_event eve) {
+        return eve == zk_event::zk_changed_event;
+    }
+
+    bool is_session_event(zk_event eve) {
+        return eve == zk_event::zk_session_event;
+    }
+
+    bool is_notwatching_event(zk_event eve) {
+        return eve == zk_event::zk_notwatching_event;
     }
 
     auto get_persistent_mode() {

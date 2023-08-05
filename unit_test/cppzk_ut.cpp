@@ -157,18 +157,21 @@ TEST_P(cppzk_test, del_not_exist_path) {
     EXPECT_EQ(!ec, false);
 };
 
-
 TEST_P(cppzk_test, async_create_path) {
+    std::string full_path = async_test_path + "/1/2/3";
+    std::string value = std::string("haha");
     std::promise<std::pair<std::error_code, std::string>> pro;
-    cm::config_monitor<zk::cppzk>::instance().async_create_path(
-        async_test_path + "/1/2/3", [&pro](const std::error_code& ec, std::string&& path) {
+    cm::config_monitor<zk::cppzk>::instance().async_create_path(full_path,
+        [&pro](const std::error_code& ec, std::string&& path) {
         pro.set_value({ ec, std::move(path) });
-    }, "haha");
+    }, value);
     auto [ec, new_path] = pro.get_future().get();
     EXPECT_EQ(ec.value(), 0);
-    EXPECT_EQ(new_path, async_test_path + "/1/2/3");
+    EXPECT_EQ(new_path, full_path);
 
-    cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
+    auto [e, path_value] = cm::config_monitor<zk::cppzk>::instance().watch_path(full_path);
+    EXPECT_EQ(e.value(), 0);
+    EXPECT_EQ(path_value.value(), value);
 };
 
 TEST_P(cppzk_test, async_create_exist_path) {
@@ -206,48 +209,48 @@ TEST_P(cppzk_test, async_set_not_exist_path_value) {
     EXPECT_FALSE(pro.get_future().get().value() == 0);
 };
 
+//****************async_watch_path********************
+
 TEST_P(cppzk_test, async_watch_path) {
     std::string async_test_path_value = "5201314";
     cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, async_test_path_value);
 
-    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+    using delay_type = std::promise<std::pair<cm::path_event, std::optional<std::string>>>;
     auto pro = std::make_shared<delay_type>();
     cm::config_monitor<zk::cppzk>::instance().async_watch_path(
-        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+        async_test_path, [&pro](cm::path_event eve, std::optional<std::string>&& value) {
         pro->set_value({ eve , std::move(value) });
     });
     auto [eve0, value0] = pro->get_future().get();
     EXPECT_EQ(eve0, cm::path_event::changed);
-    EXPECT_EQ(value0, async_test_path_value);
+    EXPECT_EQ(value0.value(), async_test_path_value);
 };
 
 TEST_P(cppzk_test, async_watch_path_not_exist_then_create) {
-    std::string async_test_path_value = "5201314";
-    std::thread([this, async_test_path_value]() {
+    std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
-        cm::config_monitor<zk::cppzk>::instance().create_path(
-            async_test_path, async_test_path_value);
+        cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path);
     }).detach();
 
-    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+    using delay_type = std::promise<std::pair<cm::path_event, std::optional<std::string>>>;
     auto pro = std::make_shared<delay_type>();
     cm::config_monitor<zk::cppzk>::instance().async_watch_path(
-        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+        async_test_path, [&pro](cm::path_event eve, std::optional<std::string>&& value) {
         pro->set_value({ eve , std::move(value) });
     });
     auto [eve0, value0] = pro->get_future().get();
     EXPECT_EQ(eve0, cm::path_event::changed);
-    EXPECT_EQ(value0, async_test_path_value);
+    EXPECT_EQ(value0.has_value(), false);
 };
 
 TEST_P(cppzk_test, async_watch_path_change_value) {
     std::string async_test_path_value = "5201314";
     cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, async_test_path_value);
 
-    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+    using delay_type = std::promise<std::pair<cm::path_event, std::optional<std::string>>>;
     std::shared_ptr<delay_type> pro;
     cm::config_monitor<zk::cppzk>::instance().async_watch_path(
-        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+        async_test_path, [&pro](cm::path_event eve, std::optional<std::string>&& value) {
         if (pro) {
             pro->set_value({ eve , std::move(value) });
         }
@@ -257,19 +260,35 @@ TEST_P(cppzk_test, async_watch_path_change_value) {
     pro = std::make_shared<delay_type>();
     std::string new_value = "this is changed test";
     cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value);
+    auto [eve, value] = pro->get_future().get();
+    EXPECT_EQ(eve, cm::path_event::changed);
+    EXPECT_EQ(value.value(), new_value);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    pro = std::make_shared<delay_type>();
+    std::string new_value1 = "this is changed test1";
+    cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value1);
     auto [eve1, value1] = pro->get_future().get();
     EXPECT_EQ(eve1, cm::path_event::changed);
-    EXPECT_EQ(value1, new_value);
+    EXPECT_EQ(value1.value(), new_value1);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    pro = std::make_shared<delay_type>();
+    std::string new_value2 = "this is changed test2";
+    cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value2);
+    auto [eve2, value2] = pro->get_future().get();
+    EXPECT_EQ(eve2, cm::path_event::changed);
+    EXPECT_EQ(value2.value(), new_value2);
 };
 
 TEST_P(cppzk_test, async_watch_path_delete_path) {
     std::string async_test_path_value = "5201314";
     cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, async_test_path_value);
 
-    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+    using delay_type = std::promise<std::pair<cm::path_event, std::optional<std::string>>>;
     std::shared_ptr<delay_type> pro;
     cm::config_monitor<zk::cppzk>::instance().async_watch_path(
-        async_test_path, [&pro](cm::path_event eve, std::string&& value) {
+        async_test_path, [&pro](cm::path_event eve, std::optional<std::string>&& value) {
         if (pro) {
             pro->set_value({ eve , std::move(value) });
         }
@@ -280,259 +299,261 @@ TEST_P(cppzk_test, async_watch_path_delete_path) {
     cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
     auto [eve2, value2] = pro->get_future().get();
     EXPECT_EQ(eve2, cm::path_event::del);
-    EXPECT_EQ(value2, "");
+    EXPECT_EQ(value2.has_value(), false);
 };
 
-TEST_P(cppzk_test, async_watch_sub_path_no_mapping) {
-    std::string sub_path1 = "1";
-    std::string value1 = "111";
-    std::string sub_path2 = "2";
-    std::string value2 = "222";
-    std::string sub_path3 = "3";
-    std::string value3 = "333";
-    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path1, value1);
-    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path2, value2);
-    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path3, value3);
+//****************async_watch_sub_path********************
 
-    auto pro = std::make_shared<std::promise<cm::path_event>>();
-    std::set<std::string> values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
-        async_main_path, [&pro, &values](cm::path_event eve, std::string&& v) {
-        if (pro) {
-            values.emplace(std::move(v));
-            if (values.size() == 3) {
-                pro->set_value(eve);
-            }
-        }
-    });
-
-    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(values.find(value1) != values.end(), true);
-    EXPECT_EQ(values.find(value2) != values.end(), true);
-    EXPECT_EQ(values.find(value3) != values.end(), true);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_mapping) {
-    std::string path1 = async_main_path + "/" + "11";
-    std::string value1 = "xxx";
-    std::string path2 = async_main_path + "/" + "12";
-    std::string value2 = "yyy";
-    std::string path3 = async_main_path + "/" + "13";
-    std::string value3 = "zzz";
-    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
-
-    std::promise<cm::path_event> pro1;
-    std::unordered_map<std::string, std::string> mapping_values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
-        async_main_path,
-        [&pro1, &mapping_values](cm::path_event eve, std::string&& v, const std::string& path) {
-        mapping_values.emplace(path, std::move(v));
-        if (mapping_values.size() == 3) {
-            pro1.set_value(eve);
-        }
-    });
-    EXPECT_EQ(pro1.get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(value1, mapping_values[path1]);
-    EXPECT_EQ(value2, mapping_values[path2]);
-    EXPECT_EQ(value3, mapping_values[path3]);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_not_exist_then_create_no_mapping) {
-    std::string path1 = async_main_path + "/" + "44";
-    std::string value1 = "xxx";
-    std::string path2 = async_main_path + "/" + "55";
-    std::string value2 = "yyy";
-    std::string path3 = async_main_path + "/" + "66";
-    std::string value3 = "zzz";
-
-    std::thread([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(15));
-        cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-        cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
-        cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
-    }).detach();
-
-    auto pro = std::make_shared<std::promise<cm::path_event>>();
-    std::set<std::string> values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
-        async_main_path,
-        [&pro, &values](cm::path_event eve, std::string&& value) {
-        values.emplace(std::move(value));
-        if (values.size() == 3) {
-            pro->set_value(eve);
-        }
-    });
-    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(values.find(value1) != values.end(), true);
-    EXPECT_EQ(values.find(value2) != values.end(), true);
-    EXPECT_EQ(values.find(value3) != values.end(), true);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_not_exist_then_create_mapping) {
-    std::string path1 = async_main_path + "/" + "77";
-    std::string value1 = "777";
-    std::string path2 = async_main_path + "/" + "88";
-    std::string value2 = "888";
-    std::string path3 = async_main_path + "/" + "99";
-    std::string value3 = "999";
-
-    std::thread([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(15));
-        cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-        cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
-        cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
-    }).detach();
-
-    std::promise<cm::path_event> pro1;
-    std::unordered_map<std::string, std::string> mapping_values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
-        async_main_path,
-        [&pro1, &mapping_values](cm::path_event eve, std::string&& v, const std::string& path) {
-        mapping_values.emplace(path, std::move(v));
-        if (mapping_values.size() == 3) {
-            pro1.set_value(eve);
-        }
-    });
-    EXPECT_EQ(pro1.get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(value1, mapping_values[path1]);
-    EXPECT_EQ(value2, mapping_values[path2]);
-    EXPECT_EQ(value3, mapping_values[path3]);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_change_value_no_mapping) {
-    std::string path1 = async_main_path + "/" + "777";
-    std::string value1 = "777";
-    std::string path2 = async_main_path + "/" + "888";
-    std::string value2 = "888";
-    std::string path3 = async_main_path + "/" + "999";
-    std::string value3 = "999";
-
-    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
-
-    using delay_type = std::promise<cm::path_event>;
-    auto pro = std::make_shared<delay_type>();
-    std::set<std::string> values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
-        async_main_path, [&pro, &values](cm::path_event eve, std::string&& value) {
-        values.emplace(std::move(value));
-        if (values.size() == 3) {
-            pro->set_value(eve);
-        }
-    });
-    pro->get_future().get();
-    values.clear();
-
-    pro = std::make_shared<delay_type>();
-    std::string new_value1 = "this is changed test, 777";
-    std::string new_value2 = "this is changed test, 888";
-    std::string new_value3 = "this is changed test, 999";
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path1, new_value1);
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path2, new_value2);
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path3, new_value3);
-    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(values.find(new_value1) != values.end(), true);
-    EXPECT_EQ(values.find(new_value2) != values.end(), true);
-    EXPECT_EQ(values.find(new_value3) != values.end(), true);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_change_value_mapping) {
-    std::string path1 = async_main_path + "/" + "7777";
-    std::string value1 = "777";
-    std::string path2 = async_main_path + "/" + "8888";
-    std::string value2 = "888";
-    std::string path3 = async_main_path + "/" + "9999";
-    std::string value3 = "999";
-
-    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
-    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
-
-    using delay_type = std::promise<cm::path_event>;
-    auto pro = std::make_shared<delay_type>();
-    std::unordered_map<std::string, std::string> mapping_values;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
-        async_main_path,
-        [&pro, &mapping_values](cm::path_event eve, std::string&& value, const std::string& path) {
-        mapping_values.emplace(path, std::move(value));
-        if (mapping_values.size() == 3) {
-            pro->set_value(eve);
-        }
-    });
-    pro->get_future().get();
-    mapping_values.clear();
-
-    pro = std::make_shared<delay_type>();
-    std::string new_value1 = "this is changed test, 7777";
-    std::string new_value2 = "this is changed test, 8888";
-    std::string new_value3 = "this is changed test, 9999";
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path1, new_value1);
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path2, new_value2);
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(path3, new_value3);
-    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
-    EXPECT_EQ(new_value1, mapping_values[path1]);
-    EXPECT_EQ(new_value2, mapping_values[path2]);
-    EXPECT_EQ(new_value3, mapping_values[path3]);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_delete_path_no_mapping) {
-    std::string path1 = async_main_path + "/" + "xxx";
-    std::string value1 = "7dfg77";
-    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-
-    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
-    std::shared_ptr<delay_type> pro;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
-      async_main_path, [&pro](cm::path_event eve, std::string&& value) {
-        if (pro) {
-            pro->set_value({ eve , std::move(value) });
-        }
-    });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    pro = std::make_shared<delay_type>();
-    cm::config_monitor<zk::cppzk>::instance().del_path(path1);
-    auto [eve2, value2] = pro->get_future().get();
-    EXPECT_EQ(eve2, cm::path_event::del);
-    EXPECT_EQ(value2, value1);
-};
-
-TEST_P(cppzk_test, async_watch_sub_path_delete_path_mapping) {
-    std::string path1 = async_main_path + "/" + "xxx";
-    std::string value1 = "7dfg77";
-    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
-
-    using delay_type = std::promise<std::tuple<cm::path_event, std::string, std::string>>;
-    std::shared_ptr<delay_type> pro;
-    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
-        async_main_path, [&pro](cm::path_event eve, std::string&& value, const std::string& path) {
-        if (pro) {
-            pro->set_value({ eve , std::move(value),path });
-        }
-    });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
-    pro = std::make_shared<delay_type>();
-    cm::config_monitor<zk::cppzk>::instance().del_path(async_main_path);
-    auto [eve2, value2, path] = pro->get_future().get();
-    EXPECT_EQ(eve2, cm::path_event::del);
-    EXPECT_EQ(value2, "");
-    EXPECT_EQ(path, path1);
-};
-
-TEST_P(cppzk_test, async_del_path) {
-    std::string delete_test_path = "/async_test_sub_path";
-    cm::config_monitor<zk::cppzk>::instance().create_path(delete_test_path + "/test/123/123/1");
-    std::promise<std::error_code> pro1;
-    cm::config_monitor<zk::cppzk>::instance().async_del_path(
-        delete_test_path, [&pro1](const std::error_code& ec) {
-        pro1.set_value(ec);
-    });
-    EXPECT_EQ(pro1.get_future().get().value(), 0);
-};
+//TEST_P(cppzk_test, async_watch_sub_path_no_mapping) {
+//    std::string sub_path1 = "1";
+//    std::string value1 = "111";
+//    std::string sub_path2 = "2";
+//    std::string value2 = "222";
+//    std::string sub_path3 = "3";
+//    std::string value3 = "333";
+//    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path1, value1);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path2, value2);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(async_main_path + "/" + sub_path3, value3);
+//
+//    auto pro = std::make_shared<std::promise<cm::path_event>>();
+//    std::set<std::string> values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
+//        async_main_path, [&pro, &values](cm::path_event eve, std::string&& v) {
+//        if (pro) {
+//            values.emplace(std::move(v));
+//            if (values.size() == 3) {
+//                pro->set_value(eve);
+//            }
+//        }
+//    });
+//
+//    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(values.find(value1) != values.end(), true);
+//    EXPECT_EQ(values.find(value2) != values.end(), true);
+//    EXPECT_EQ(values.find(value3) != values.end(), true);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_mapping) {
+//    std::string path1 = async_main_path + "/" + "11";
+//    std::string value1 = "xxx";
+//    std::string path2 = async_main_path + "/" + "12";
+//    std::string value2 = "yyy";
+//    std::string path3 = async_main_path + "/" + "13";
+//    std::string value3 = "zzz";
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
+//
+//    std::promise<cm::path_event> pro1;
+//    std::unordered_map<std::string, std::string> mapping_values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
+//        async_main_path,
+//        [&pro1, &mapping_values](cm::path_event eve, std::string&& v, const std::string& path) {
+//        mapping_values.emplace(path, std::move(v));
+//        if (mapping_values.size() == 3) {
+//            pro1.set_value(eve);
+//        }
+//    });
+//    EXPECT_EQ(pro1.get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(value1, mapping_values[path1]);
+//    EXPECT_EQ(value2, mapping_values[path2]);
+//    EXPECT_EQ(value3, mapping_values[path3]);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_not_exist_then_create_no_mapping) {
+//    std::string path1 = async_main_path + "/" + "44";
+//    std::string value1 = "xxx";
+//    std::string path2 = async_main_path + "/" + "55";
+//    std::string value2 = "yyy";
+//    std::string path3 = async_main_path + "/" + "66";
+//    std::string value3 = "zzz";
+//
+//    std::thread([&]() {
+//        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
+//    }).detach();
+//
+//    auto pro = std::make_shared<std::promise<cm::path_event>>();
+//    std::set<std::string> values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
+//        async_main_path,
+//        [&pro, &values](cm::path_event eve, std::string&& value) {
+//        values.emplace(std::move(value));
+//        if (values.size() == 3) {
+//            pro->set_value(eve);
+//        }
+//    });
+//    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(values.find(value1) != values.end(), true);
+//    EXPECT_EQ(values.find(value2) != values.end(), true);
+//    EXPECT_EQ(values.find(value3) != values.end(), true);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_not_exist_then_create_mapping) {
+//    std::string path1 = async_main_path + "/" + "77";
+//    std::string value1 = "777";
+//    std::string path2 = async_main_path + "/" + "88";
+//    std::string value2 = "888";
+//    std::string path3 = async_main_path + "/" + "99";
+//    std::string value3 = "999";
+//
+//    std::thread([&]() {
+//        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
+//        cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
+//    }).detach();
+//
+//    std::promise<cm::path_event> pro1;
+//    std::unordered_map<std::string, std::string> mapping_values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
+//        async_main_path,
+//        [&pro1, &mapping_values](cm::path_event eve, std::string&& v, const std::string& path) {
+//        mapping_values.emplace(path, std::move(v));
+//        if (mapping_values.size() == 3) {
+//            pro1.set_value(eve);
+//        }
+//    });
+//    EXPECT_EQ(pro1.get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(value1, mapping_values[path1]);
+//    EXPECT_EQ(value2, mapping_values[path2]);
+//    EXPECT_EQ(value3, mapping_values[path3]);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_change_value_no_mapping) {
+//    std::string path1 = async_main_path + "/" + "777";
+//    std::string value1 = "777";
+//    std::string path2 = async_main_path + "/" + "888";
+//    std::string value2 = "888";
+//    std::string path3 = async_main_path + "/" + "999";
+//    std::string value3 = "999";
+//
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
+//
+//    using delay_type = std::promise<cm::path_event>;
+//    auto pro = std::make_shared<delay_type>();
+//    std::set<std::string> values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
+//        async_main_path, [&pro, &values](cm::path_event eve, std::string&& value) {
+//        values.emplace(std::move(value));
+//        if (values.size() == 3) {
+//            pro->set_value(eve);
+//        }
+//    });
+//    pro->get_future().get();
+//    values.clear();
+//
+//    pro = std::make_shared<delay_type>();
+//    std::string new_value1 = "this is changed test, 777";
+//    std::string new_value2 = "this is changed test, 888";
+//    std::string new_value3 = "this is changed test, 999";
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path1, new_value1);
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path2, new_value2);
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path3, new_value3);
+//    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(values.find(new_value1) != values.end(), true);
+//    EXPECT_EQ(values.find(new_value2) != values.end(), true);
+//    EXPECT_EQ(values.find(new_value3) != values.end(), true);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_change_value_mapping) {
+//    std::string path1 = async_main_path + "/" + "7777";
+//    std::string value1 = "777";
+//    std::string path2 = async_main_path + "/" + "8888";
+//    std::string value2 = "888";
+//    std::string path3 = async_main_path + "/" + "9999";
+//    std::string value3 = "999";
+//
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path2, value2);
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path3, value3);
+//
+//    using delay_type = std::promise<cm::path_event>;
+//    auto pro = std::make_shared<delay_type>();
+//    std::unordered_map<std::string, std::string> mapping_values;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
+//        async_main_path,
+//        [&pro, &mapping_values](cm::path_event eve, std::string&& value, const std::string& path) {
+//        mapping_values.emplace(path, std::move(value));
+//        if (mapping_values.size() == 3) {
+//            pro->set_value(eve);
+//        }
+//    });
+//    pro->get_future().get();
+//    mapping_values.clear();
+//
+//    pro = std::make_shared<delay_type>();
+//    std::string new_value1 = "this is changed test, 7777";
+//    std::string new_value2 = "this is changed test, 8888";
+//    std::string new_value3 = "this is changed test, 9999";
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path1, new_value1);
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path2, new_value2);
+//    cm::config_monitor<zk::cppzk>::instance().set_path_value(path3, new_value3);
+//    EXPECT_EQ(pro->get_future().get(), cm::path_event::changed);
+//    EXPECT_EQ(new_value1, mapping_values[path1]);
+//    EXPECT_EQ(new_value2, mapping_values[path2]);
+//    EXPECT_EQ(new_value3, mapping_values[path3]);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_delete_path_no_mapping) {
+//    std::string path1 = async_main_path + "/" + "xxx";
+//    std::string value1 = "7dfg77";
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//
+//    using delay_type = std::promise<std::pair<cm::path_event, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path<false>(
+//      async_main_path, [&pro](cm::path_event eve, std::string&& value) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value) });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    cm::config_monitor<zk::cppzk>::instance().del_path(path1);
+//    auto [eve2, value2] = pro->get_future().get();
+//    EXPECT_EQ(eve2, cm::path_event::del);
+//    EXPECT_EQ(value2, value1);
+//};
+//
+//TEST_P(cppzk_test, async_watch_sub_path_delete_path_mapping) {
+//    std::string path1 = async_main_path + "/" + "xxx";
+//    std::string value1 = "7dfg77";
+//    cm::config_monitor<zk::cppzk>::instance().create_path(path1, value1);
+//
+//    using delay_type = std::promise<std::tuple<cm::path_event, std::string, std::string>>;
+//    std::shared_ptr<delay_type> pro;
+//    cm::config_monitor<zk::cppzk>::instance().async_watch_sub_path(
+//        async_main_path, [&pro](cm::path_event eve, std::string&& value, const std::string& path) {
+//        if (pro) {
+//            pro->set_value({ eve , std::move(value),path });
+//        }
+//    });
+//
+//    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+//    pro = std::make_shared<delay_type>();
+//    cm::config_monitor<zk::cppzk>::instance().del_path(async_main_path);
+//    auto [eve2, value2, path] = pro->get_future().get();
+//    EXPECT_EQ(eve2, cm::path_event::del);
+//    EXPECT_EQ(value2, "");
+//    EXPECT_EQ(path, path1);
+//};
+//
+//TEST_P(cppzk_test, async_del_path) {
+//    std::string delete_test_path = "/async_test_sub_path";
+//    cm::config_monitor<zk::cppzk>::instance().create_path(delete_test_path + "/test/123/123/1");
+//    std::promise<std::error_code> pro1;
+//    cm::config_monitor<zk::cppzk>::instance().async_del_path(
+//        delete_test_path, [&pro1](const std::error_code& ec) {
+//        pro1.set_value(ec);
+//    });
+//    EXPECT_EQ(pro1.get_future().get().value(), 0);
+//};
 
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
                          ::testing::Values(zk_info{ "192.168.3.163:2181", 40000 }));

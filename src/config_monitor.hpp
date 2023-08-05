@@ -60,7 +60,7 @@ inline constexpr bool always_false_v = false;
 template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
-    using watch_cb = std::function<void(path_event, std::string&&)>;
+    using watch_cb = std::function<void(path_event, std::optional<std::string>&&)>;
     using mapping_watch_cb = std::function<void(path_event, std::string&&, const std::string&)>;
     using operate_cb = std::function<void(const std::error_code&)>;
     using create_cb = std::function<void(const std::error_code&, std::string&&)>;
@@ -90,34 +90,34 @@ public:
     */
     template <typename... Args>
     void init(Args&&... args) {
-        if constexpr (has_set_expired_cb_v<ConfigType>) {
-            ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
-                ConfigType::clear_resource();
-                last_sub_path_.clear();
-                this->callable([this](auto&&... args) {
-                    ConfigType::initialize(std::forward<decltype(args)>(args)...);
-                }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
+        //if constexpr (has_set_expired_cb_v<ConfigType>) {
+        //    ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
+        //        ConfigType::clear_resource();
+        //        last_sub_path_.clear();
+        //        this->callable([this](auto&&... args) {
+        //            ConfigType::initialize(std::forward<decltype(args)>(args)...);
+        //        }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
 
-                // auto rewatch
-                if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-                    std::unique_lock<std::mutex> lock(record_mtx_);
-                    auto record = std::move(record_);
-                    auto mapping_record = std::move(mapping_record_);
-                    lock.unlock();
-                    for (auto& [path, pair] : record) {
-                        for (auto& [watch_type, cb] : pair) {
-                            watch_type == watch_type::watch_path ?
-                                async_watch_path(path, std::move(cb)) :
-                                async_watch_sub_path<false>(path, std::move(cb));
-                        }
-                    }
-                    //Here just watch_sub_path
-                    for (auto& [path, pair] : mapping_record) {
-                        async_watch_sub_path(path, std::move(pair.second));
-                    }
-                }
-            });
-        }
+        //        // auto rewatch
+        //        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+        //            std::unique_lock<std::mutex> lock(record_mtx_);
+        //            auto record = std::move(record_);
+        //            auto mapping_record = std::move(mapping_record_);
+        //            lock.unlock();
+        //            for (auto& [path, pair] : record) {
+        //                for (auto& [watch_type, cb] : pair) {
+        //                    watch_type == watch_type::watch_path ?
+        //                        async_watch_path(path, std::move(cb)) :
+        //                        async_watch_sub_path<false>(path, std::move(cb));
+        //                }
+        //            }
+        //            //Here just watch_sub_path
+        //            for (auto& [path, pair] : mapping_record) {
+        //                async_watch_sub_path(path, std::move(pair.second));
+        //            }
+        //        }
+        //    });
+        //}
         ConfigType::initialize(std::forward<Args>(args)...);
     }
 
@@ -130,17 +130,17 @@ public:
      * @param mode Default is persistent path
      * @return [std::error_code, path_name], a new path name if mode is sequential
     */
-    auto create_path(std::string_view path, std::string_view value = "",
+    auto create_path(std::string_view path, const std::optional<std::string>& value = std::nullopt,
                      create_mode mode = create_mode::persistent) {
         std::binary_semaphore cond{0};
         std::tuple<std::error_code, std::string> ret;
-        [this, &cond, &ret, path, value, mode]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path, &value, mode]() ->coro::coro_task<void> {
             auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
             if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
                 auto sp_path = ConfigType::split_path(path);
                 auto sp_mode = ConfigType::get_create_mode((int)create_mode::persistent);
                 for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-                    co_await ConfigType::async_create_path(sp_path[i].data(), {}, sp_mode);
+                    co_await ConfigType::async_create_path(sp_path[i].data(), std::nullopt, sp_mode);
                 }
             }
             ret = co_await ConfigType::async_create_path(path, value, create_mode);
@@ -160,15 +160,16 @@ public:
      * @param mode Default is persistent path
     */
     coro::coro_task<> async_create_path(std::string_view path, create_cb cb,
-        std::string_view value = "", create_mode mode = create_mode::persistent) {
+        const std::optional<std::string>& value = std::nullopt,
+        create_mode mode = create_mode::persistent) {
         std::string p(path);
-        std::string v(value);
+        auto v = value;
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             auto sp_path = ConfigType::split_path(p);
             auto sp_mode = ConfigType::get_create_mode((int)create_mode::persistent);
             for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-                co_await ConfigType::async_create_path(sp_path[i].data(), {}, sp_mode);
+                co_await ConfigType::async_create_path(sp_path[i].data(), std::nullopt, sp_mode);
             }
         }
 
@@ -237,6 +238,43 @@ public:
         }();
         cond.acquire();
         return ret;
+    }
+
+    /**
+     * @brief Async get the path value.
+     * Also valid for a non existed path. The monitor will start after the target path is created.
+     *
+     * @param path The target path
+     * @param cb Callback, 2th arg is changed value.
+     * If the event is del, then the changed value must be empty.
+    */
+    coro::coro_task<> async_watch_path(std::string_view path, watch_cb cb) {
+        auto p = std::string(path);
+        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+            std::unique_lock<std::mutex> lock(record_mtx_);
+            record_[p].emplace(watch_type::watch_path, cb);
+            lock.unlock();
+        }
+
+        auto [ec, value] = co_await ConfigType::async_get_path_value(p);
+        if (!ec) {
+            cb(path_event::changed, value.has_value() ? std::move(value) : std::nullopt);
+        }
+        for (;;) {
+            auto eve = co_await ConfigType::async_exists_path(p);
+            if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
+                co_return;
+            }
+            if (ConfigType::is_create_event(eve) || ConfigType::is_changed_event(eve)) {
+                auto [e, val] = co_await ConfigType::async_get_path_value(p);
+                if (!e) {
+                    cb(path_event::changed, val.has_value() ? std::move(val) : std::nullopt);
+                }
+            }
+            if (ConfigType::is_delete_event(eve)) {
+                cb(path_event::del, std::nullopt);
+            }      
+        }
     }
 
     /**
@@ -313,40 +351,6 @@ public:
 
             if (cb) {
                 cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
-
-    /**
-     * @brief Async get the path value.
-     * Also valid for a non existed path. The monitor will start after the target path is created.
-     *
-     * @param path The target path
-     * @param cb Callback, 2th arg is changed value.
-     * If the event is del, then the changed value must be empty.
-    */
-    void async_watch_path(std::string_view path, watch_cb cb) {
-        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-            std::unique_lock<std::mutex> lock(record_mtx_);
-            record_[std::string(path)].emplace(watch_type::watch_path, cb);
-            lock.unlock();
-        }
-
-        ConfigType::exists_path(path, [this, cb, p = std::string(path)](auto err, auto eve) {
-            if (!ConfigType::is_no_error(err)) {
-                return;
-            }
-
-            if (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve)) {
-                ConfigType::get_path_value(p, [cb, this](auto err, auto&& value) {
-                    if (ConfigType::is_no_node(err)) {
-                        //watch_path do not need content when del event, the mapping is explicit
-                        return cb(path_event::del, {});
-                    }
-                    if (ConfigType::is_no_error(err) && value.has_value()) {
-                        cb(path_event::changed, std::move(value.value()));
-                    }
-                });
             }
         });
     }
