@@ -31,6 +31,12 @@ struct value_awaiter {
     void set_resume_value(Ret&& data) {
         data_ = std::forward<Ret>(data);
     }
+
+    template<typename Ret>
+    void set_value_then_resume(Ret&& data) {
+        this->set_resume_value(std::forward<Ret>(data));
+        this->resume();
+    }
 };
 
 template<typename T>
@@ -142,14 +148,14 @@ public:
 };
 
 template <typename T>
-coro_task<T> coro_task_promise<T>::get_return_object() noexcept {
+inline coro_task<T> coro_task_promise<T>::get_return_object() noexcept {
     handle_ = std::coroutine_handle<coro_task_promise>::from_promise(*this);
    // printf("get_return_object, coro address:%p\n", handle_.address());
     auto tk = coro_task<T>{ handle_ };
     return tk;
 }
 
-coro_task<void> coro_task_promise<void>::get_return_object() noexcept {
+inline coro_task<void> coro_task_promise<void>::get_return_object() noexcept {
     handle_ = std::coroutine_handle<coro_task_promise>::from_promise(*this);
    // printf("get_return_object, coro address:%p\n", handle_.address());
     auto tk = coro_task<void>{ handle_ };

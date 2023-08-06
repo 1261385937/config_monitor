@@ -41,8 +41,9 @@ enum class path_event {
 };
 
 enum class watch_type {
-    watch_path,
-    watch_sub_path
+    watch_path = 0x01,
+    watch_sub_path = 0x02,
+    watch_all = 0x04
 };
 
 enum class create_mode {
@@ -60,17 +61,14 @@ inline constexpr bool always_false_v = false;
 template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
-    using watch_cb = std::function<void(path_event, std::optional<std::string>&&)>;
-    using mapping_watch_cb = std::function<void(path_event, std::string&&, const std::string&)>;
+    using watch_cb = std::function<void(path_event, std::optional<std::string>&&, const std::string&)>;
     using operate_cb = std::function<void(const std::error_code&)>;
     using create_cb = std::function<void(const std::error_code&, std::string&&)>;
 
 private:
     // key is main path
     std::unordered_map<std::string, std::unordered_set<std::string>> last_sub_path_;
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> sub_path_value_;
     std::unordered_map<std::string, std::unordered_map<watch_type, watch_cb>> record_;
-    std::unordered_map<std::string, std::pair<watch_type, mapping_watch_cb>> mapping_record_;
     std::mutex record_mtx_;
 
 public:
@@ -217,11 +215,27 @@ public:
      * @return std::error_code
     */
     auto del_path(std::string_view path) {
-        std::promise<std::error_code> pro;
-        ConfigType::delete_path(path, [this, &pro](auto e) {
-            pro.set_value(ConfigType::make_error_code(e));
-        });
-        return pro.get_future().get();
+        std::binary_semaphore cond{0};
+        std::error_code ret;
+        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+            ret = co_await ConfigType::async_delete_path(path);
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
+    }
+
+    /**
+    * @brief Async delete the path (include their sub path).
+    *
+    * @param path The target path
+    * @param callback
+   */
+    coro::coro_task<> async_del_path(std::string_view path, operate_cb callback) {
+        auto ec = co_await ConfigType::async_delete_path(path);
+        if (callback) {
+            callback(ec);
+        }
     }
 
     /**
@@ -255,25 +269,26 @@ public:
             record_[p].emplace(watch_type::watch_path, cb);
             lock.unlock();
         }
-
+        //for first time
         auto [ec, value] = co_await ConfigType::async_get_path_value(p);
         if (!ec) {
-            cb(path_event::changed, value.has_value() ? std::move(value) : std::nullopt);
+            cb(path_event::changed, value.has_value() ? std::move(value) : std::nullopt, p);
         }
+
         for (;;) {
-            auto eve = co_await ConfigType::async_exists_path(p);
+            auto eve = co_await ConfigType::async_watch_exists_path(p);
             if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
                 co_return;
             }
             if (ConfigType::is_create_event(eve) || ConfigType::is_changed_event(eve)) {
                 auto [e, val] = co_await ConfigType::async_get_path_value(p);
                 if (!e) {
-                    cb(path_event::changed, val.has_value() ? std::move(val) : std::nullopt);
+                    cb(path_event::changed, val.has_value() ? std::move(val) : std::nullopt, p);
                 }
             }
             if (ConfigType::is_delete_event(eve)) {
-                cb(path_event::del, std::nullopt);
-            }      
+                cb(path_event::del, {}, p);
+            }
         }
     }
 
@@ -298,7 +313,7 @@ public:
                 auto full_path = std::string(path) + "/" + *it;
                 auto [wec, value] = co_await ConfigType::async_get_path_value(full_path);
                 if (!wec) {
-                    mapping_values.emplace(std::move(full_path), std::move(value)); 
+                    mapping_values.emplace(std::move(full_path), std::move(value));
                 }
             }
             ret = std::make_tuple(ec, mapping_values);
@@ -309,17 +324,116 @@ public:
     }
 
     /**
-     * @brief Async delete the path (include their sub path).
+     * @brief Async get children path value of the target path.
+     * Also valid for a non existed path. The monitor will start after the target path is created.
      *
      * @param path The target path
-     * @param callback
+     * @param cb Callback, 2th arg is changed value.
+     * If the event is del, then the changed value must be empty.
     */
-    void async_del_path(std::string_view path, operate_cb callback) {
-        ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
+    coro::coro_task<> async_watch_sub_path(std::string_view path, watch_cb cb) {
+        auto main_path = std::string(path);
+        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+            std::unique_lock<std::mutex> lock(record_mtx_);
+            record_[main_path].emplace(watch_type::watch_sub_path, cb);
+            lock.unlock();
+        }   
+        //for first time
+        auto [ec, subs] = co_await ConfigType::async_get_sub_path(main_path);
+        if (!ec) {
+            for (const auto& sub : subs) {
+                std::string p = main_path + "/" + sub;
+                async_watch_path(p, cb);
             }
-        });
+        }
+        else {
+            if (ConfigType::is_no_node(ec)) {
+                for (;;) {
+                    auto eve = co_await ConfigType::async_watch_exists_path(main_path);
+                    if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
+                        co_return;
+                    }
+                    if (ConfigType::is_create_event(eve)) {
+                        break;
+                    }
+                }
+            }
+        }
+       
+        for (;;) {
+            auto eve = co_await ConfigType::async_watch_sub_path(main_path);
+            if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
+                co_return;
+            }
+            auto [ec2, sub_paths] = co_await ConfigType::async_get_sub_path(main_path);
+            if (ec2) {
+                continue;
+            }
+            std::unordered_set<std::string> sub_paths_set;
+            auto it = last_sub_path_.find(main_path);
+            // all sub_paths are new path, get each value
+            if (it == last_sub_path_.end()) {
+                for (auto&& sub_path : sub_paths) {
+                    std::string p = main_path + "/" + sub_path;
+                    async_watch_path(p, cb);
+                    sub_paths_set.emplace(std::move(sub_path));
+                }
+                last_sub_path_.emplace(main_path, std::move(sub_paths_set));
+                continue;
+            }
+            // check new paths
+            for (auto&& sub_path : sub_paths) {
+                if (it->second.find(sub_path) != it->second.end()) { // exist
+                    continue;
+                }
+                std::string p = main_path + "/" + sub_path;
+                async_watch_path(p, cb);
+               }
+            //Replace the old sub_paths_set
+            for (auto&& sub_path : sub_paths) {
+                sub_paths_set.emplace(std::move(sub_path));
+            }
+            last_sub_path_[main_path] = std::move(sub_paths_set);
+        }
+    }
+
+    /**
+    * @brief Sync remove the watch, the path event will not be triggered.
+    * @param path The target path
+    * @param type Watch type, path or sub-path
+   */
+    auto remove_watches(std::string_view path, watch_type type) {
+        std::binary_semaphore cond{0};
+        std::error_code ret;
+        [this, &cond, &ret, path, type]() ->coro::coro_task<void> {
+            auto p = std::string(path);
+            ret = co_await ConfigType::async_remove_watches(path, (int)type);
+            if (ret) {
+                cond.release();
+                co_return;
+            }
+
+            last_sub_path_.erase(p);
+            if (type == watch_type::watch_path) {
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                record_.erase(p);
+                lock.unlock();
+                cond.release();
+                co_return;
+            }
+            //sub-path
+            std::unique_lock<std::mutex> lock(record_mtx_);
+            if (auto it = record_.find(p); it != record_.end()) {
+                it->second.erase(type);
+                if (it->second.empty()) {
+                    record_.erase(it);
+                }
+            }
+            lock.unlock();
+            cond.release();
+        }();
+        cond.acquire();
+        return ret;
     }
 
     /**
@@ -328,126 +442,36 @@ public:
      * @param type Watch type, path or sub-path
      * @param callback
     */
-    void async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
-        ConfigType::remove_watches(
-            path, static_cast<int>(type),
-            [this, type, p = std::string(path), cb = std::move(callback)](auto e) {
-            last_sub_path_.erase(p);
-            sub_path_value_.erase(p);
-            if (type == watch_type::watch_path) {
-                std::unique_lock<std::mutex> lock(record_mtx_);
-                record_.erase(p);
+    coro::coro_task<>
+        async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
+        auto p = std::string(path);
+        auto ret = co_await ConfigType::async_remove_watches(path, (int)type);
+        if (ret) {
+            if (callback) {
+                callback(ret);
             }
-            else { //sub-path
-                std::unique_lock<std::mutex> lock(record_mtx_);
-                mapping_record_.erase(p);
-                if (auto it = record_.find(p); it != record_.end()) {
-                    it->second.erase(type);
-                    if (it->second.empty()) {
-                        record_.erase(it);
-                    }
-                }
-            }
-
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
-
-    /**
-     * @brief Async get children path value of the target path.
-     * Also valid for a non existed path. The monitor will start after the target path is created.
-     *
-     * @tparam WatchCb
-     * @tparam Mapping Enable mapping or not.
-     * @param path The target path
-     * @param cb Callback, 2th arg is changed value.
-     * If disable mapping, for del event, changed value is last time value.
-     * If enable mapping, the extra 3th arg is children path. For del event, 2th arg is awalys empty
-    */
-    template<
-        bool Mapping = true,
-        typename WatchCb = std::conditional_t<Mapping, mapping_watch_cb, watch_cb>
-    >
-    void async_watch_sub_path(std::string_view path, WatchCb&& cb) {
-        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-            std::unique_lock<std::mutex> lock(record_mtx_);
-            if constexpr (Mapping) {
-                mapping_record_[std::string(path)] = { watch_type::watch_sub_path, cb };
-            }
-            else {
-                record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
-            }
-            lock.unlock();
+            co_return;
         }
 
-        auto main_path = std::string(path);
-        auto monitor_path = [this, cb, main_path](const std::string& sub_path) {
-            ConfigType::get_path_value(
-                sub_path, [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
-                if (ConfigType::is_no_error(e) && value.has_value()) {  // changed
-                    if constexpr (Mapping) {
-                        cb(path_event::changed, std::move(value.value()), sub_path);
-                    }
-                    else {
-                        sub_path_value_[main_path][sub_path] = value.value();
-                        cb(path_event::changed, std::move(value.value()));
-                    }
-                    return;
-                }
+        last_sub_path_.erase(p);
+        if (type == watch_type::watch_path) {
+            std::unique_lock<std::mutex> lock(record_mtx_);
+            record_.erase(p);
+        }
+        else { //sub-path
+            std::unique_lock<std::mutex> lock(record_mtx_);
 
-                if (ConfigType::is_no_node(e)) {  // del
-                    if constexpr (Mapping) {
-                        cb(path_event::del, {}, sub_path);
-                    }
-                    else {
-                        cb(path_event::del, std::move(sub_path_value_[main_path][sub_path]));
-                        sub_path_value_[main_path].erase(sub_path);
-                    }
+            if (auto it = record_.find(p); it != record_.end()) {
+                it->second.erase(type);
+                if (it->second.empty()) {
+                    record_.erase(it);
                 }
-            });
-        };
-
-        ConfigType::exists_path(path, [this, main_path, monitor_path](auto err, auto eve) {
-            if (!ConfigType::is_no_error(err)) {
-                return;
             }
-            if (!ConfigType::is_dummy_event(eve) && !ConfigType::is_create_event(eve)) {
-                return;
-            }
+        }
 
-            ConfigType::get_sub_path(
-                main_path, [this, main_path, monitor_path](auto err, auto, auto&& sub_paths) {
-                if (!ConfigType::is_no_error(err)) {
-                    return;
-                }
-
-                std::unordered_set<std::string> sub_paths_set;
-                auto it = last_sub_path_.find(main_path);
-                // all is new paths, monitor all
-                if (it == last_sub_path_.end()) {
-                    for (auto&& sub_path : sub_paths) {
-                        monitor_path(main_path + "/" + sub_path);
-                        sub_paths_set.emplace(std::move(sub_path));
-                    }
-                    last_sub_path_.emplace(main_path, std::move(sub_paths_set));
-                    return;
-                }
-                // che new paths
-                for (auto&& sub_path : sub_paths) {
-                    if (it->second.find(sub_path) != it->second.end()) {  // exist
-                        continue;
-                    }
-                    monitor_path(main_path + "/" + sub_path);
-                }
-                //Replace the old sub_paths_set
-                for (auto&& sub_path : sub_paths) {
-                    sub_paths_set.emplace(std::move(sub_path));
-                }
-                last_sub_path_[main_path] = std::move(sub_paths_set);
-            });
-        });
+        if (callback) {
+            callback(ret);
+        }
     }
 
     /**
