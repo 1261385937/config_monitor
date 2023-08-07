@@ -118,20 +118,19 @@ public:
         auto value_ptr = !value.has_value() ? nullptr : value.value().data();
         auto value_len = !value.has_value() ? -1 : (int)value.value().length();
         using awaiter_type = coro::value_awaiter<std::tuple<std::error_code, std::string>>;
-        auto awaiter = new awaiter_type();
+        awaiter_type awaiter;
         auto r = zoo_acreate2_ttl(zh_, path.data(), value_ptr, value_len, &acl_mapping[acl],
             (int)mode, ttl, [](int rc, const char* string, const struct Stat*, const void* data) {
             auto ec = make_ec(rc);
             auto val = (string == nullptr ? std::string{} : std::string(string));
             auto awaiter = (awaiter_type*)data;
             awaiter->set_value_then_resume(std::make_tuple(std::move(ec), std::move(val)));
-            delete awaiter;
-        }, awaiter);
+        }, &awaiter);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_acreate2_ttl error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     coro::coro_task<std::error_code>
@@ -143,17 +142,16 @@ public:
 
         using awaiter_type = coro::value_awaiter<std::error_code>;
         for (auto& sub : sub_paths) {
-            auto awaiter = new awaiter_type{};
+            awaiter_type awaiter;
             auto r = zoo_adelete(zh_, sub.data(), -1, [](int rc, const void* data) {
                 auto awaiter = (awaiter_type*)data;
                 awaiter->set_value_then_resume(make_ec(rc));
-                delete awaiter;
-            }, awaiter);
+            }, &awaiter);
 
             if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_adelete error: ") + zerror(r));
             }
-            auto ec = co_await(*awaiter);
+            auto ec = co_await awaiter;
             if (ec) {
                 co_return ec;
             }
@@ -163,18 +161,17 @@ public:
     coro::coro_task<std::error_code>
         async_set_path_value(std::string_view path, std::string_view value) {
         using awaiter_type = coro::value_awaiter<std::error_code>;
-        auto awaiter = new awaiter_type();
+        awaiter_type awaiter;
         auto r = zoo_aset(zh_, path.data(), value.data(), (int)value.length(), -1,
             [](int rc, const struct Stat*, const void* data) {
             auto awaiter = (awaiter_type*)data;
             awaiter->set_value_then_resume(make_ec(rc));
-            delete awaiter;
-        }, awaiter);
+        }, &awaiter);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_aset error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     // [create/change/delete] event
@@ -184,17 +181,16 @@ public:
         auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
             auto awaiter = (awaiter_type*)watcherCtx;
             awaiter->set_value_then_resume((zk_event)eve);
-            delete awaiter;
         };
         auto completion = [](int, const struct Stat*, const void*) {};
 
-        auto awaiter = new awaiter_type();
-        auto r = zoo_awexists(zh_, path.data(), wfn, awaiter, completion, nullptr);
+        awaiter_type awaiter;
+        auto r = zoo_awexists(zh_, path.data(), wfn, &awaiter, completion, nullptr);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_awexists error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     // [child] event
@@ -204,17 +200,16 @@ public:
         auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
             auto awaiter = (awaiter_type*)watcherCtx;
             awaiter->set_value_then_resume((zk_event)eve);
-            delete awaiter;
         };
         auto completion = [](int, const struct String_vector*, const struct Stat*, const void*) {};
 
-        auto awaiter = new awaiter_type();
-        auto r = zoo_awget_children2(zh_, path.data(), wfn, awaiter, completion, nullptr);
+        awaiter_type awaiter;
+        auto r = zoo_awget_children2(zh_, path.data(), wfn, &awaiter, completion, nullptr);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_awget_children2 error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     coro::coro_task<std::tuple<std::error_code, std::optional<std::string>>>
@@ -226,16 +221,15 @@ public:
                 value ? std::string(value, value_len) : std::optional<std::string>();
             auto awaiter = (awaiter_type*)data;
             awaiter->set_value_then_resume(std::make_tuple(make_ec(rc), std::move(dummy)));
-            delete awaiter;
         };
 
-        auto awaiter = new awaiter_type();
-        auto r = zoo_awget(zh_, path.data(), nullptr, nullptr, cb, awaiter);
+        awaiter_type awaiter;
+        auto r = zoo_awget(zh_, path.data(), nullptr, nullptr, cb, &awaiter);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_awget error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     coro::coro_task<std::tuple<std::error_code, std::vector<std::string>>>
@@ -254,16 +248,15 @@ public:
             }
             auto awaiter = (awaiter_type*)data;
             awaiter->set_value_then_resume(std::make_tuple(make_ec(rc), std::move(children_path)));
-            delete awaiter;
         };
 
-        auto awaiter = new awaiter_type();
-        auto r = zoo_awget_children2(zh_, path.data(), nullptr, nullptr, completion, awaiter);
+        awaiter_type awaiter;
+        auto r = zoo_awget_children2(zh_, path.data(), nullptr, nullptr, completion, &awaiter);
 
         if (r != ZOK) {
             throw std::runtime_error(std::string("zoo_awget_children2 error: ") + zerror(r));
         }
-        co_return co_await(*awaiter);
+        co_return co_await awaiter;
     }
 
     coro::coro_task<std::error_code>
@@ -272,46 +265,45 @@ public:
         void_completion_t completion = [](int rc, const void* data) {
             auto awaiter = (awaiter_type*)data;
             awaiter->set_value_then_resume(make_ec(rc));
-            delete awaiter;
         };
 
         int r = 0;
         std::string p(path);
         if ((watch_type & 0x01) != 0) { //path
-            auto awaiter = new awaiter_type();
+            awaiter_type awaiter;
             r = zoo_aremove_all_watches(zh_, p.data(),
-                ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, awaiter);
+                ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, &awaiter);
 
             if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
             }
-            co_return co_await(*awaiter);
+            co_return co_await awaiter;
         }
 
         if ((watch_type & 0x02) != 0) { //sub_path
-            auto awaiter = new awaiter_type();
+            awaiter_type awaiter;
             r = zoo_aremove_all_watches(zh_, p.data(),
-                ZWATCHTYPE_CHILD, 0, (void_completion_t*)completion, awaiter);
+                ZWATCHTYPE_CHILD, 0, (void_completion_t*)completion, &awaiter);
 
             if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
             }
-            auto ec = co_await(*awaiter);
+            auto ec = co_await awaiter;
             if (ec) {
                 co_return ec;
             }
 
             auto [_, sub_paths] = co_await async_get_sub_path(p);
             for (auto& sub : sub_paths) {
-                auto aw = new awaiter_type();
+                awaiter_type aw;
                 auto full = std::string(p) + "/" + sub;
                 r = zoo_aremove_all_watches(zh_, full.data(),
-                    ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, aw);
+                    ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, &aw);
 
                 if (r != ZOK) {
                     throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
                 }
-                auto e = co_await(*aw);
+                auto e = co_await aw;
                 if (e) {
                     co_return e;
                 }
