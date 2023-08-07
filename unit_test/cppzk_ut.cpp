@@ -182,26 +182,24 @@ TEST_P(cppzk_test, async_set_not_exist_path_value) {
 
 TEST_P(cppzk_test, del_path) {
     std::string main_path = "/delete_test";
-    std::string sub_path1_ = "1";
-    std::string sub_path2_ = "2";
-    std::string sub_path3_ = "3";
 
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path1_ + "/" + "11");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path1_ + "/" + "12");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path1_ + "/" + "13");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path2_ + "/" + "21");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path2_ + "/" + "22");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path2_ + "/" + "23");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_ + "/" + "31");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_ + "/" + "32");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_ + "/" + "33");
-
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path1_ + "/" + "11/1");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path2_ + "/" + "21/2");
-    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/" + sub_path3_ + "/" + "31/3");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/1/11");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/2/12");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/3/13");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/1/21");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/2/22");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/3/23");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/1/31");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/2/32");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/3/33");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/1/11/1");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/2/21/2");
+    cm::config_monitor<zk::cppzk>::instance().create_path(main_path + "/3/31/3");
 
     auto ec = cm::config_monitor<zk::cppzk>::instance().del_path(main_path);
     EXPECT_EQ(!ec, true);
+    auto [e, path_value] = cm::config_monitor<zk::cppzk>::instance().watch_path(main_path + "/1");
+    EXPECT_FALSE(e.value() == 0);
 };
 
 TEST_P(cppzk_test, del_not_exist_path) {
@@ -221,6 +219,19 @@ TEST_P(cppzk_test, async_del_path) {
         pro1.set_value(ec);
     });
     EXPECT_EQ(pro1.get_future().get().value(), 0);
+
+    auto [e, _] = cm::config_monitor<zk::cppzk>::instance().watch_path(delete_test_path + "/test");
+    EXPECT_FALSE(e.value() == 0);
+};
+
+TEST_P(cppzk_test, async_del_not_exist_path) {
+    std::string delete_test_path = "/delete_not_exist_test";
+    std::promise<std::error_code> pro1;
+    cm::config_monitor<zk::cppzk>::instance().async_del_path(
+        delete_test_path, [&pro1](const std::error_code& ec) {
+        pro1.set_value(ec);
+    });
+    EXPECT_FALSE(pro1.get_future().get().value() == 0);
 };
 
 //****************watch_path********************
@@ -249,7 +260,7 @@ TEST_P(cppzk_test, async_watch_path) {
 
     using delay_type = std::promise<std::pair<cm::path_event, std::optional<std::string>>>;
     auto pro = std::make_shared<delay_type>();
-    cm::config_monitor<zk::cppzk>::instance().async_watch_path(async_test_path, 
+    cm::config_monitor<zk::cppzk>::instance().async_watch_path(async_test_path,
         [&pro](cm::path_event eve, std::optional<std::string>&& value, const std::string&) {
         pro->set_value({ eve , std::move(value) });
     });
@@ -488,4 +499,4 @@ TEST_P(cppzk_test, async_watch_sub_path_delete_path) {
 
 
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
-                         ::testing::Values(zk_info{ "192.168.3.163:2181", 40000 }));
+                         ::testing::Values(zk_info{ "192.168.152.137:2181", 40000 }));
