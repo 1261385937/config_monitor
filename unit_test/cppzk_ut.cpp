@@ -286,7 +286,7 @@ TEST_P(cppzk_test, async_watch_path_not_exist_then_create) {
     EXPECT_EQ(value0.has_value(), false);
 };
 
-TEST_P(cppzk_test, async_watch_path_change_value) {
+TEST_P(cppzk_test, async_watch_path_change_delete_create_change) {
     std::string async_test_path_value = "5201314";
     cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, async_test_path_value);
 
@@ -307,21 +307,25 @@ TEST_P(cppzk_test, async_watch_path_change_value) {
     EXPECT_EQ(eve, cm::path_event::changed);
     EXPECT_EQ(value.value(), new_value);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
     pro = std::make_shared<delay_type>();
-    std::string new_value1 = "this is changed test1";
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value1);
+    cm::config_monitor<zk::cppzk>::instance().del_path(async_test_path);
     auto [eve1, value1] = pro->get_future().get();
-    EXPECT_EQ(eve1, cm::path_event::changed);
-    EXPECT_EQ(value1.value(), new_value1);
+    EXPECT_EQ(eve1, cm::path_event::del);
+    EXPECT_EQ(value1.has_value(), false);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
     pro = std::make_shared<delay_type>();
     std::string new_value2 = "this is changed test2";
-    cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value2);
+    cm::config_monitor<zk::cppzk>::instance().create_path(async_test_path, new_value2);
     auto [eve2, value2] = pro->get_future().get();
     EXPECT_EQ(eve2, cm::path_event::changed);
     EXPECT_EQ(value2.value(), new_value2);
+
+    pro = std::make_shared<delay_type>();
+    std::string new_value3 = "this is changed test3";
+    cm::config_monitor<zk::cppzk>::instance().set_path_value(async_test_path, new_value3);
+    auto [eve3, value3] = pro->get_future().get();
+    EXPECT_EQ(eve3, cm::path_event::changed);
+    EXPECT_EQ(value3.value(), new_value3);
 };
 
 TEST_P(cppzk_test, async_watch_path_delete_path) {
