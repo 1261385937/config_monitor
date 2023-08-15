@@ -20,10 +20,20 @@
 #include <type_traits>
 #include <unordered_map>
 #include "../awaitable_transform.hpp"
-#include "cppzk_define.h"
+#include "cppzk_redeclare.h"
 
 namespace zk {
+
+inline std::unordered_map<zk_acl, ACL_vector> acl_mapping{
+    {zk_acl::zk_open_acl_unsafe, ZOO_OPEN_ACL_UNSAFE},
+    { zk_acl::zk_read_acl_unsafe, ZOO_READ_ACL_UNSAFE },
+    { zk_acl::zk_creator_all_acl, ZOO_CREATOR_ALL_ACL }
+};
+
 class cppzk {
+public:
+    using expired_callback = std::function<void()>;
+
 private:
     zhandle_t* zh_{};
     std::string hosts_;
@@ -69,16 +79,8 @@ public:
         std::call_once(of_, [this]() { detect_expired_session(); });
     }
 
-    zk_error clear_resource() {
-        return static_cast<zk_error>(zookeeper_close(zh_));
-    }
-
-    zk_error handle_state() {
-        return static_cast<zk_error>(zoo_state(zh_));
-    }
-
-    std::string last_error(zk_error e) {
-        return zerror((int)e);
+    std::error_code clear_resource() {
+        return make_ec(zookeeper_close(zh_));
     }
 
     void set_log_level(zk_loglevel level) {
@@ -374,16 +376,9 @@ private:
     }
 
 protected:
-    bool is_no_error(zk_error err) {
-        return err == zk_error::zk_ok;
-    }
 
     bool is_no_node(const std::error_code& err) {
         return err.value() == ZOO_ERRORS::ZNONODE;
-    }
-
-    bool is_dummy_event(zk_event eve) {
-        return eve == zk_event::zk_dummy_event;
     }
 
     bool is_create_event(zk_event eve) {
@@ -400,10 +395,6 @@ protected:
 
     bool is_session_event(zk_event eve) {
         return eve == zk_event::zk_session_event;
-    }
-
-    bool is_child_event(zk_event eve) {
-        return eve == zk_event::zk_child_event;
     }
 
     bool is_notwatching_event(zk_event eve) {
