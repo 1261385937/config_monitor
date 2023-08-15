@@ -88,34 +88,29 @@ public:
     */
     template <typename... Args>
     void init(Args&&... args) {
-        //if constexpr (has_set_expired_cb_v<ConfigType>) {
-        //    ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
-        //        ConfigType::clear_resource();
-        //        last_sub_path_.clear();
-        //        this->callable([this](auto&&... args) {
-        //            ConfigType::initialize(std::forward<decltype(args)>(args)...);
-        //        }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
+        if constexpr (has_set_expired_cb_v<ConfigType>) {
+            ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
+                ConfigType::clear_resource();
+                last_sub_path_.clear();
+                this->callable([this](auto&&... args) {
+                    ConfigType::initialize(std::forward<decltype(args)>(args)...);
+                }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
 
-        //        // auto rewatch
-        //        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-        //            std::unique_lock<std::mutex> lock(record_mtx_);
-        //            auto record = std::move(record_);
-        //            auto mapping_record = std::move(mapping_record_);
-        //            lock.unlock();
-        //            for (auto& [path, pair] : record) {
-        //                for (auto& [watch_type, cb] : pair) {
-        //                    watch_type == watch_type::watch_path ?
-        //                        async_watch_path(path, std::move(cb)) :
-        //                        async_watch_sub_path<false>(path, std::move(cb));
-        //                }
-        //            }
-        //            //Here just watch_sub_path
-        //            for (auto& [path, pair] : mapping_record) {
-        //                async_watch_sub_path(path, std::move(pair.second));
-        //            }
-        //        }
-        //    });
-        //}
+                // auto rewatch
+                if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+                    std::unique_lock<std::mutex> lock(record_mtx_);
+                    auto record = std::move(record_);           
+                    lock.unlock();
+                    for (auto& [path, pair] : record) {
+                        for (auto& [watch_type, cb] : pair) {
+                            watch_type == watch_type::watch_path ?
+                                async_watch_path(path, std::move(cb)) :
+                                async_watch_sub_path(path, std::move(cb));
+                        }
+                    }
+                }
+            });
+        }
         ConfigType::initialize(std::forward<Args>(args)...);
     }
 
@@ -416,20 +411,17 @@ public:
             last_sub_path_.erase(p);
             if (type == watch_type::watch_path) {
                 std::unique_lock<std::mutex> lock(record_mtx_);
-                record_.erase(p);
-                lock.unlock();
-                cond.release();
-                co_return;
+                record_.erase(p);        
             }
-            //sub-path
-            std::unique_lock<std::mutex> lock(record_mtx_);
-            if (auto it = record_.find(p); it != record_.end()) {
-                it->second.erase(type);
-                if (it->second.empty()) {
-                    record_.erase(it);
+            else { //sub-path
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                if (auto it = record_.find(p); it != record_.end()) {
+                    it->second.erase(type);
+                    if (it->second.empty()) {
+                        record_.erase(it);
+                    }
                 }
-            }
-            lock.unlock();
+            }          
             cond.release();
         }();
         cond.acquire();
@@ -460,7 +452,6 @@ public:
         }
         else { //sub-path
             std::unique_lock<std::mutex> lock(record_mtx_);
-
             if (auto it = record_.find(p); it != record_.end()) {
                 it->second.erase(type);
                 if (it->second.empty()) {

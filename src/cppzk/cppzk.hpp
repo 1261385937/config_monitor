@@ -29,9 +29,6 @@ private:
     std::string hosts_;
     int unused_flags_ = 0;
 
-    std::mutex mtx_;
-    std::unordered_map<uint64_t, std::shared_ptr<user_data>> releaser_;
-
     std::thread detect_expired_thread_;
     std::atomic<int> session_timeout_ms_ = -1;
     std::atomic<bool> run_ = true;
@@ -178,8 +175,14 @@ public:
     coro::coro_task<zk_event>
         async_watch_exists_path(std::string_view path) {
         using awaiter_type = coro::value_awaiter<zk_event>;
-        auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
+        auto wfn = [](zhandle_t*, int eve, int state, const char*, void* watcherCtx) {
             auto awaiter = (awaiter_type*)watcherCtx;
+            if (eve == ZOO_SESSION_EVENT) {
+                if (state == ZOO_EXPIRED_SESSION_STATE) {
+                    awaiter->set_value_then_resume((zk_event)eve);
+                }
+                return;
+            }   
             awaiter->set_value_then_resume((zk_event)eve);
         };
         auto completion = [](int, const struct Stat*, const void*) {};
@@ -197,8 +200,14 @@ public:
     coro::coro_task<zk_event>
         async_watch_sub_path(std::string_view path) {
         using awaiter_type = coro::value_awaiter<zk_event>;
-        auto wfn = [](zhandle_t*, int eve, int, const char*, void* watcherCtx) {
+        auto wfn = [](zhandle_t*, int eve, int state, const char*, void* watcherCtx) {
             auto awaiter = (awaiter_type*)watcherCtx;
+            if (eve == ZOO_SESSION_EVENT) {
+                if (state == ZOO_EXPIRED_SESSION_STATE) {
+                    awaiter->set_value_then_resume((zk_event)eve);
+                }
+                return;
+            }
             awaiter->set_value_then_resume((zk_event)eve);
         };
         auto completion = [](int, const struct String_vector*, const struct Stat*, const void*) {};
@@ -323,9 +332,6 @@ private:
                   zoo_get(zh_, "/zookeeper", 0, nullptr, 0, nullptr);
                 }
                 if (!is_conntected_) {
-                    std::unique_lock<std::mutex> lock(mtx_);
-                    releaser_.clear();
-                    lock.unlock();
                     expired_cb_();
                 }
             }
