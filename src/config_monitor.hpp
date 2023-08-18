@@ -89,25 +89,25 @@ public:
     void init(Args&&... args) {
         if constexpr (has_set_expired_cb_v<ConfigType>) {
             ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
-                //ConfigType::clear_resource();
-                //last_sub_path_.clear();
-                //this->callable([this](auto&&... args) {
-                //    ConfigType::initialize(std::forward<decltype(args)>(args)...);
-                //}, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
+                ConfigType::clear_resource();
+                last_sub_path_.clear();
+                this->callable([this](auto&&... args) {
+                    ConfigType::initialize(std::forward<decltype(args)>(args)...);
+                }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
 
-                //// auto rewatch
-                //if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-                //    std::unique_lock<std::mutex> lock(record_mtx_);
-                //    auto record = std::move(record_);           
-                //    lock.unlock();
-                //    for (auto& [path, pair] : record) {
-                //        for (auto& [watch_type, cb] : pair) {
-                //            watch_type == watch_type::watch_path ?
-                //                async_watch_path(path, std::move(cb)) :
-                //                async_watch_sub_path(path, std::move(cb));
-                //        }
-                //    }
-                //}
+                // auto rewatch
+                if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+                    std::unique_lock<std::mutex> lock(record_mtx_);
+                    auto record = std::move(record_);           
+                    lock.unlock();
+                    for (auto& [path, pair] : record) {
+                        for (auto& [watch_type, cb] : pair) {
+                            watch_type == watch_type::watch_path ?
+                                async_watch_path(path, std::move(cb)) :
+                                async_watch_sub_path(path, std::move(cb));
+                        }
+                    }
+                }
             });
         }
         ConfigType::initialize(std::forward<Args>(args)...);
