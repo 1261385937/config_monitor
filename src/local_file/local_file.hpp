@@ -9,32 +9,28 @@
 #include <thread>
 #include <optional>
 #include <chrono>
+#include "../awaitable_transform.hpp"
 #include "local_file_declare.hpp"
 
 namespace loc {
 
 class loc_file {
 public:
-    using create_callback = std::function<void(file_error, std::string&&)>;
-    using delete_callback = std::function<void(file_error)>;
-    using set_callback = std::function<void(file_error)>;
-    using exists_callback = std::function<void(file_error, file_event)>;
-    using get_callback = std::function<void(file_error, std::optional<std::string>&&)>;
-    using get_children_callback = std::function<void(file_error, file_event, std::deque<std::string>&&)>;
+    using watch_exists_callback = std::function<void(file_event)>;
+    using watch_hildren_callback = std::function<void(file_event)>;
 
-    using last_existed_status_type = std::unordered_map<std::string, bool>;
-    using monitor_exist_path_type = std::unordered_map<std::string, exists_callback>;
-    using last_changed_time_type = std::unordered_map<std::string, size_t>;
-    using monitor_get_path_type = std::unordered_map<std::string, get_callback>;
+    struct existed_status {
+        bool existed;
+        size_t modify_time;
+    };
+    using last_existed_status_type = std::unordered_map<std::string, existed_status>;
+    using monitor_exist_path_type = std::unordered_map<std::string, watch_exists_callback>;
     using last_path_children_type = std::unordered_map<std::string, std::deque<std::string>>;
-    using monitor_sub_path_type = std::unordered_map<std::string, get_children_callback>;
+    using monitor_sub_path_type = std::unordered_map<std::string, watch_hildren_callback>;
 
 private:
     last_existed_status_type last_existed_status_;
     monitor_exist_path_type monitor_exist_path_;
-
-    last_changed_time_type last_changed_time_;
-    monitor_get_path_type monitor_get_path_;
 
     last_path_children_type last_path_children_;
     monitor_sub_path_type monitor_sub_path_;
@@ -53,15 +49,13 @@ public:
                 task_cv_.wait_for(lock, std::chrono::milliseconds(frequency_ms), [this]() {
                     return !run_ || !task_queue_.empty();
                 });
-                auto task_queue = std::move(task_queue_);
                 auto last_existed_status = last_existed_status_;
                 auto monitor_exist_path = monitor_exist_path_;
 
-                auto last_changed_time = last_changed_time_;
-                auto monitor_get_path = monitor_get_path_;
-
                 auto last_path_children = last_path_children_;
                 auto monitor_sub_path = monitor_sub_path_;
+
+                auto task_queue = std::move(task_queue_);
                 lock.unlock();
 
                 // deal task
@@ -70,7 +64,6 @@ public:
                 }
 
                 handle_monitor_exist(std::move(last_existed_status), std::move(monitor_exist_path));
-                handle_monitor_get(std::move(last_changed_time), std::move(monitor_get_path));
                 handle_monitor_sub(std::move(last_path_children), std::move(monitor_sub_path));
             }
         });
@@ -84,8 +77,9 @@ public:
         }
     }
 
-    void create_path(std::string_view path, std::string_view value, file_create_mode mode,
-                     create_callback ccb, int64_t ttl = -1) {
+    coro::coro_task<std::tuple<std::error_code, std::string>>
+        async_create_path(std::string_view path, std::optional<std::string> value,
+        file_create_mode mode, int64_t ttl = -1) {
         bool enable_ttl = false;
         if (mode == file_create_mode::persistent_sequential_with_ttl ||
             mode == file_create_mode::persistent_with_ttl) {
@@ -94,143 +88,162 @@ public:
         if (enable_ttl && ttl < 0) {
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
-        add_task([this, p = std::string(path), v = std::string(value), cb = std::move(ccb)]() mutable {
+
+        using awaiter_type = coro::value_awaiter<std::tuple<std::error_code, std::string>>;
+        awaiter_type awaiter;
+        add_task([this, p = std::string(path), val = value, &awaiter]() mutable {
             std::filesystem::path path(p);
-            auto exist = std::filesystem::exists(path);
+            std::error_code ec;
+            auto exist = std::filesystem::exists(path, ec);
+            if (ec) {
+                awaiter.set_value_then_resume(std::make_tuple(ec, std::string{}));
+                return;
+            }
             if (exist) {
-                cb(file_error::already_exist, {});
+                awaiter.set_value_then_resume(
+                    std::make_tuple(make_ec(file_err::already_exist), std::string{}));
                 return;
             }
 
             auto parent_path = path.parent_path();
             auto file_name = path.filename();
-            std::filesystem::create_directories(parent_path);
-            auto err = set_file_value(p, v);
-            cb(err, std::move(p));
+            std::filesystem::create_directories(parent_path, ec);
+            if (ec) {
+                awaiter.set_value_then_resume(std::make_tuple(ec, std::string{}));
+                return;
+            }
+            auto err = set_file_value(p, val.has_value() ? val.value() : "", false);
+            awaiter.set_value_then_resume(std::make_tuple(err, std::move(p)));
         });
+        co_return co_await awaiter;
     }
 
-    void delete_path(std::string_view path, delete_callback dcb) {
-        add_task([p = std::string(path), callback = std::move(dcb)]() {
+    coro::coro_task<std::error_code>
+        async_delete_path(std::string_view path) {
+        using awaiter_type = coro::value_awaiter<std::error_code>;
+        awaiter_type awaiter;
+        add_task([p = std::string(path), &awaiter]() {
             std::error_code ec;
             auto exist = std::filesystem::exists(p);
             if (!exist) {
-                callback(file_error::not_exist);
+                awaiter.set_value_then_resume(make_ec(file_err::not_exist));
                 return;
             }
 
             std::filesystem::remove_all(p, ec);
-            if (ec) {         
-                return callback(file_error::already_used);
-            }
-            callback(file_error::ok);
-        });
-    }
-
-    void set_path_value(std::string_view path, std::string_view value, set_callback scb) {
-        add_task([this, p = std::string(path), v = std::string(value), callback = std::move(scb)]() {
-            auto exist = std::filesystem::exists(p);
-            if (!exist) {
-                callback(file_error::not_exist);
+            if (ec) {
+                awaiter.set_value_then_resume(ec);
                 return;
             }
+            awaiter.set_value_then_resume(ec);
+        });
+        co_return co_await awaiter;
+    }
 
+    coro::coro_task<std::error_code>
+        async_set_path_value(std::string_view path, std::string_view value) {
+        using awaiter_type = coro::value_awaiter<std::error_code>;
+        awaiter_type awaiter;
+        add_task([this, p = std::string(path), v = std::string(value), &awaiter]() {
             auto err = set_file_value(p, v);
-            callback(err);
+            awaiter.set_value_then_resume(err);
         });
+        co_return co_await awaiter;
     }
 
-    // [create/delete/changed] event just for current path
-    template <bool Advanced = true>
-    void exists_path(std::string_view path, exists_callback ecb) {
-        auto existed = std::filesystem::exists(path);
-        if (!existed) {
-            add_task([ecb]() { ecb(file_error::not_exist, file_event::dummy_event); });
-        }
-        else {
-            add_task([ecb]() { ecb(file_error::ok, file_event::dummy_event); });
-        }
+    // [create/change/delete] event
+    coro::coro_task<file_event>
+        async_watch_exists_path(std::string_view path) {
+        auto p = std::string(path);
+        std::error_code ig;
+        auto [_, time] = file_modify_time(p);
+        auto exist = std::filesystem::exists(p, ig);
+        using awaiter_type = coro::value_awaiter<file_event>;
+        awaiter_type awaiter;
 
-        if constexpr (Advanced) {
-            auto p = std::string(path);
+        {
             std::unique_lock lock(task_mtx_);
-            monitor_exist_path_.emplace(p, std::move(ecb));
-            last_existed_status_.emplace(std::move(p), existed);
-        }
-    }
-
-    // [changed] event just for current path, if the path exists all the time
-    template <bool Advanced = true>
-    void get_path_value(std::string_view path, get_callback gcb) {
-        auto [err, value] = get_file_value(path);
-        if (err != file_error::ok) {
-            return add_task([gcb]() { gcb(file_error::not_exist, {}); });
-        }
-        add_task([gcb, v = std::move(value)]() mutable { gcb(file_error::ok, std::move(v)); });
-
-        if constexpr (Advanced) {
-            auto [_, timestamp] = file_modify_time(path);
-            auto p = std::string(path);
-            std::unique_lock lock(task_mtx_);
-            monitor_get_path_.emplace(p, std::move(gcb));
-            last_changed_time_.emplace(std::move(p), timestamp);
-        }
-    }
-
-    // [create/delete] sub path event just for current path, if the path exists all the time
-    template <bool Advanced = true>
-    void get_sub_path(std::string_view path, get_children_callback gccb) {
-        auto existed = std::filesystem::exists(path);
-        if (!existed) {
-            return add_task([gccb]() { gccb(file_error::not_exist, file_event::dummy_event, {}); });
-        }
-
-        auto children = get_path_children(path);
-        if constexpr (Advanced) {
-            add_task([gccb, children]() mutable{
-                gccb(file_error::ok, file_event::dummy_event, std::move(children));
+            monitor_exist_path_.emplace(p, [&awaiter](file_event eve) {
+                awaiter.set_value_then_resume(eve);
             });
-            auto p = std::string(path);
-            std::unique_lock lock(task_mtx_);
-            monitor_sub_path_.emplace(p, std::move(gccb));
-            last_path_children_.emplace(std::move(p), std::move(children));
+            last_existed_status_.emplace(std::move(p), existed_status{ exist, time });
         }
-        else {
-            add_task([gccb, ch = std::move(children)]() mutable {
-                gccb(file_error::ok, file_event::dummy_event, std::move(ch));
-            });
-        }
+        co_return co_await awaiter;
     }
 
-    void remove_watches(std::string_view path, int watch_type, delete_callback cb) {
-        add_task([cb, watch_type, this, p = std::string(path)]() {
-            if (watch_type == 0) {
+    // [child] event
+    coro::coro_task<file_event>
+        async_watch_sub_path(std::string_view path) {
+        using awaiter_type = coro::value_awaiter<file_event>;
+        awaiter_type awaiter;
+        auto p = std::string(path);
+        auto [_, sub_children] = get_path_children(path);
+
+        {
+            std::unique_lock lock(task_mtx_);
+            monitor_sub_path_.emplace(p, [&awaiter](file_event eve) {
+                awaiter.set_value_then_resume(eve);
+            });
+            last_path_children_.emplace(std::move(p), std::move(sub_children));
+        }
+        co_return co_await awaiter;
+    }
+
+    coro::coro_task<std::tuple<std::error_code, std::optional<std::string>>>
+        async_get_path_value(std::string_view path) {
+        using awaiter_type = coro::value_awaiter<
+            std::tuple<std::error_code, std::optional<std::string>>>;
+        awaiter_type awaiter;
+        auto [_, timestamp] = file_modify_time(path);
+        auto p = std::string(path);
+        add_task([this, p = std::string(path), &awaiter]() {         
+            auto [ec, val] = get_file_value(p);
+            awaiter.set_value_then_resume(std::make_tuple(ec, std::move(val)));
+        });
+        co_return co_await awaiter;
+    }
+
+    coro::coro_task<std::tuple<std::error_code, std::deque<std::string>>>
+        async_get_sub_path(std::string_view path) {
+        auto p = std::string(path);
+        using awaiter_type = coro::value_awaiter<
+            std::tuple<std::error_code, std::deque<std::string>>>;
+        awaiter_type awaiter;
+        add_task([this, p = std::string(path), &awaiter]() {
+            auto [ec, children] = get_path_children(p);
+            awaiter.set_value_then_resume(std::make_tuple(ec, std::move(children)));
+        });
+        co_return co_await awaiter;
+    }
+
+    coro::coro_task<std::error_code>
+        async_remove_watches(std::string_view path, int watch_type) {
+        using awaiter_type = coro::value_awaiter<std::error_code>;
+        awaiter_type awaiter;
+        add_task([watch_type, this, p = std::string(path), &awaiter]() {
+            if (watch_type == 0) { //path
                 remove_monitor_exist_path(p);
-                remove_monitor_get_path(p);
             }
-            else { //sub-path
-                remove_monitor_exist_path(p);
+
+            if (watch_type == 1) { //sub-path
                 remove_monitor_sub_path(p);
-                auto children = get_path_children(p);
-                for (const auto& child : children) {
-                    remove_monitor_get_path(p + "/" + child);
-                }
+                auto [_, children] = get_path_children(p);
+                for (auto& sub : children) {
+                    remove_monitor_exist_path(std::string(p) + "/" + sub);
+                }                  
             }
-            cb(file_error::ok);
+            awaiter.set_value_then_resume(make_ec(file_err::ok));
         });
+        co_return co_await awaiter;
     }
 
 protected:
-    bool is_no_error(file_error err) {
-        return err == file_error::ok;
+    static std::error_code make_ec(file_err err) {
+        return { static_cast<int>(err), loc::category() };
     }
 
-    bool is_no_node(file_error err) {
-        return err == file_error::not_exist;
-    }
-
-    bool is_dummy_event(file_event eve) {
-        return eve == file_event::dummy_event;
+    bool is_no_node(std::error_code ec) {
+        return ec.value() == (int)file_err::not_exist;
     }
 
     bool is_create_event(file_event eve) {
@@ -241,16 +254,24 @@ protected:
         return eve == file_event::deleted_event;
     }
 
+    bool is_changed_event(file_event eve) {
+        return eve == file_event::changed_event;
+    }
+
+    bool is_session_event(file_event) {
+        return false;
+    }
+
+    bool is_notwatching_event(file_event) {
+        return false;
+    }
+
     auto get_persistent_mode() {
         return file_create_mode::persistent;
     }
 
     auto get_create_mode(int mode) {
         return static_cast<file_create_mode>(mode);
-    }
-    
-    std::error_code make_error_code(file_error err) {
-        return { static_cast<int>(err), loc::category() };
     }
 
 private:
@@ -262,76 +283,72 @@ private:
         task_cv_.notify_one();
     }
 
-    std::pair<file_error, std::string> get_file_value(std::string_view path) {
+    std::pair<std::error_code, std::string> get_file_value(std::string_view path) {
         std::string value;
         auto file = fopen(path.data(), "rb");
         if (file == nullptr) {
-            return { file_error::not_exist, value };
+            return { make_ec(file_err::not_exist), value };
         }
 
         auto size = std::filesystem::file_size(path);
         value.resize(size, 0);
         fread(value.data(), value.length(), 1, file);
         fclose(file);
-        return { file_error::ok, value };
+        return { make_ec(file_err::ok), value };
     }
 
-    file_error set_file_value(std::string_view path, std::string_view value) {
-        auto file = fopen(path.data(), "wb+");
+    std::error_code set_file_value(
+        std::string_view path, std::string_view value, bool need_existed = true) {
+        if (need_existed) {
+            std::error_code ec;
+            auto existed = std::filesystem::exists(path, ec);
+            if (ec) {
+                return ec;
+            }
+            if (!existed) {
+                return make_ec(file_err::not_exist);
+            }
+        }
+        
+        auto file = fopen(path.data(), "wb");
         if (file == nullptr) {
-            return file_error::not_exist;
+            return make_ec(file_err::not_exist);
         }
         fwrite(value.data(), value.length(), 1, file);
         fclose(file);
-        return file_error::ok;
+        return make_ec(file_err::ok);
     }
 
-    std::pair<file_error, size_t> file_modify_time(std::string_view path) {
+    std::pair<std::error_code, size_t> file_modify_time(std::string_view path) {
         namespace sc = std::chrono;
         std::error_code ec;
         auto time = std::filesystem::last_write_time(path, ec);
         if (ec) {
-            return { file_error::not_exist, 0 };
+            return { ec, 0 };
         }
         auto timestamp = sc::duration_cast<sc::nanoseconds>(time.time_since_epoch()).count();
-        return { file_error::ok, timestamp };
+        return { ec, timestamp };
     }
 
-    void remove_monitor_get_path(const std::string& path) {
-        std::unique_lock lock(task_mtx_);
-        last_changed_time_.erase(path);
-        monitor_get_path_.erase(path);
-    }
-
-    void remove_monitor_exist_path(const std::string& path) {
-        std::unique_lock lock(task_mtx_);
+    void remove_monitor_exist_path(const std::string& path) {     
+        std::unique_lock lock(task_mtx_);      
         last_existed_status_.erase(path);
         monitor_exist_path_.erase(path);
     }
 
-    void remove_monitor_sub_path(const std::string& path) {
-        std::unique_lock lock(task_mtx_);
+    void remove_monitor_sub_path(const std::string& path) {   
+        std::unique_lock lock(task_mtx_);       
         last_path_children_.erase(path);
         monitor_sub_path_.erase(path);
     }
 
-    void update_last_existed_status(const std::string& path, bool status) {
-        std::unique_lock lock(task_mtx_);
-        last_existed_status_[path] = status;
-    }
-
-    void update_last_changed_time(const std::string& path, size_t timestamp) {
-        std::unique_lock lock(task_mtx_);
-        last_changed_time_[path] = timestamp;
-    }
-
-    std::deque<std::string> get_path_children(std::string_view path) {
+    std::pair<std::error_code, std::deque<std::string>> get_path_children(std::string_view path) {
         std::deque<std::string> file;
         namespace fs = std::filesystem;
         std::error_code ec;
         auto dirs = fs::directory_iterator{ fs::path(path), ec };
         if (ec) {
-            return file;
+            return { ec, file };
         }
 
         for (auto& dir_entry : dirs) {
@@ -340,70 +357,54 @@ private:
                 continue;
             }
         }
-        return file;
-    }
-
-    void updata_path_children(const std::string& path, std::deque<std::string> children) {
-        std::unique_lock lock(task_mtx_);
-        last_path_children_[path] = std::move(children);
+        return { ec, file };
     }
 
     void handle_monitor_exist(last_existed_status_type&& last_existed_status,
                               monitor_exist_path_type&& monitor_exist_path) {
         for (auto& [path, last_status] : last_existed_status) {
-            auto this_status = std::filesystem::exists(path);
-            if (last_status == this_status) {
-                //Todo: here can check changed or not.  changed_event or dummy_event
+            std::error_code ec;
+            auto this_existed = std::filesystem::exists(path, ec);
+            if (ec) {
                 continue;
             }
-            update_last_existed_status(path, this_status);
+
+            //last existed status as same as this time.
+            if (last_status.existed == this_existed) {
+                auto [_, this_modify_time] = file_modify_time(path);
+                if (!_ && (this_modify_time != last_status.modify_time)) {
+                    remove_monitor_exist_path(path);
+                    monitor_exist_path[path](file_event::changed_event);              
+                }
+                continue;
+            }
 
             //last status is existed, this time not existed.
-            if (last_status == true) {
-                monitor_exist_path[path](file_error::not_exist, file_event::deleted_event);
+            if (last_status.existed == true) {
+                remove_monitor_exist_path(path);
+                monitor_exist_path[path](file_event::deleted_event); 
                 continue;
             }
+
             //last status is not existed, this time existed.
-            if (last_status == false) {
-                monitor_exist_path[path](file_error::ok, file_event::created_event);
+            if (last_status.existed == false) {
+                remove_monitor_exist_path(path);
+                monitor_exist_path[path](file_event::created_event);               
             }
-        }
-    }
-
-    void handle_monitor_get(last_changed_time_type&& last_changed_time,
-                            monitor_get_path_type&& monitor_get_path) {
-        for (auto& [path, last_timestamp] : last_changed_time) {
-            auto [_, this_timestamp] = file_modify_time(path);
-            //nothing changed
-            if (last_timestamp == this_timestamp) {
-                continue;
-            }
-
-            //value changed
-            auto [err, value] = get_file_value(path);
-            if (err != file_error::ok) {
-                //file removed
-                monitor_get_path[path](file_error::not_exist, {});
-                remove_monitor_get_path(path);
-                continue;
-            }
-            monitor_get_path[path](file_error::ok, std::move(value));
-            update_last_changed_time(path, this_timestamp);
         }
     }
 
     void handle_monitor_sub(last_path_children_type last_sub_path,
-                            monitor_sub_path_type monitor_sub_path) {
+        monitor_sub_path_type monitor_sub_path) {
         for (auto& [path, last_sub_children] : last_sub_path) {
-            auto this_sub_children = get_path_children(path);
-            if (last_sub_children == this_sub_children) {
+            auto [ec, this_sub_children] = get_path_children(path);
+            if (ec || (last_sub_children == this_sub_children)) {
                 continue;
             }
-            updata_path_children(path, this_sub_children);
-            monitor_sub_path[path](file_error::ok,
-                                   file_event::child_event, std::move(this_sub_children));
+            remove_monitor_sub_path(path);
+            monitor_sub_path[path](file_event::child_event);
         }
     }
 };
 
-}  // namespace loc
+}  // namespace loc+

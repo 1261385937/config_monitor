@@ -3,7 +3,7 @@
 
 namespace loc {
 
-enum class file_error {
+enum class file_err {
     ok,
     not_exist,
     already_exist,
@@ -16,6 +16,7 @@ enum class file_event {
     deleted_event = 2,
     changed_event = 3,
     child_event = 4,
+    notwatch_event = 4,
 };
 
 enum class file_create_mode {
@@ -34,15 +35,15 @@ public:
     }
 
     virtual std::string message(int err_val) const override {
-        switch (static_cast<file_error>(err_val)) {
-        case file_error::ok:
+        switch (static_cast<file_err>(err_val)) {
+        case file_err::ok:
             return "ok";
-        case file_error::not_exist:
+        case file_err::not_exist:
             return "file not exist";
-        case file_error::already_exist:
+        case file_err::already_exist:
             return "file already_exist";
         default:
-            return "unrecognized error";
+            return "unknown error";
         }
     }
 };

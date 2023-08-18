@@ -1,4 +1,5 @@
 #pragma once
+#include <system_error>
 #include "zookeeper.h"
 
 // redefine according to zookeeper origin define

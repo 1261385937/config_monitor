@@ -280,7 +280,7 @@ public:
 
         int r = 0;
         std::string p(path);
-        if ((watch_type & 0x01) != 0) { //path
+        if (watch_type == 0) { //path
             awaiter_type awaiter;
             r = zoo_aremove_all_watches(zh_, p.data(),
                 ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, &awaiter);
@@ -291,7 +291,7 @@ public:
             co_return co_await awaiter;
         }
 
-        if ((watch_type & 0x02) != 0) { //sub_path
+        if (watch_type == 1) { //sub_path
             awaiter_type awaiter;
             r = zoo_aremove_all_watches(zh_, p.data(),
                 ZWATCHTYPE_CHILD, 0, (void_completion_t*)completion, &awaiter);
@@ -371,11 +371,10 @@ private:
         session_timeout_ms_ = zoo_recv_timeout(zh_);  // get the actual value
     }
 
+protected:
     static std::error_code make_ec(int err) {
         return { err, zk::category() };
     }
-
-protected:
 
     bool is_no_node(const std::error_code& err) {
         return err.value() == ZOO_ERRORS::ZNONODE;

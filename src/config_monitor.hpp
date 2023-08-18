@@ -41,9 +41,8 @@ enum class path_event {
 };
 
 enum class watch_type {
-    watch_path = 0x01,
-    watch_sub_path = 0x02,
-    watch_all = 0x04
+    watch_path = 0,
+    watch_sub_path = 1
 };
 
 enum class create_mode {
@@ -90,25 +89,25 @@ public:
     void init(Args&&... args) {
         if constexpr (has_set_expired_cb_v<ConfigType>) {
             ConfigType::set_expired_cb([this, arg = std::make_tuple(args...)]() mutable {
-                ConfigType::clear_resource();
-                last_sub_path_.clear();
-                this->callable([this](auto&&... args) {
-                    ConfigType::initialize(std::forward<decltype(args)>(args)...);
-                }, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
+                //ConfigType::clear_resource();
+                //last_sub_path_.clear();
+                //this->callable([this](auto&&... args) {
+                //    ConfigType::initialize(std::forward<decltype(args)>(args)...);
+                //}, std::move(arg), std::make_index_sequence<std::tuple_size_v<decltype(arg)>>());
 
-                // auto rewatch
-                if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-                    std::unique_lock<std::mutex> lock(record_mtx_);
-                    auto record = std::move(record_);           
-                    lock.unlock();
-                    for (auto& [path, pair] : record) {
-                        for (auto& [watch_type, cb] : pair) {
-                            watch_type == watch_type::watch_path ?
-                                async_watch_path(path, std::move(cb)) :
-                                async_watch_sub_path(path, std::move(cb));
-                        }
-                    }
-                }
+                //// auto rewatch
+                //if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+                //    std::unique_lock<std::mutex> lock(record_mtx_);
+                //    auto record = std::move(record_);           
+                //    lock.unlock();
+                //    for (auto& [path, pair] : record) {
+                //        for (auto& [watch_type, cb] : pair) {
+                //            watch_type == watch_type::watch_path ?
+                //                async_watch_path(path, std::move(cb)) :
+                //                async_watch_sub_path(path, std::move(cb));
+                //        }
+                //    }
+                //}
             });
         }
         ConfigType::initialize(std::forward<Args>(args)...);
@@ -123,7 +122,7 @@ public:
      * @param mode Default is persistent path
      * @return [std::error_code, path_name], a new path name if mode is sequential
     */
-    auto create_path(std::string_view path, const std::optional<std::string>& value = std::nullopt,
+    auto create_path(std::string_view path, std::optional<std::string> value = std::nullopt,
                      create_mode mode = create_mode::persistent) {
         std::binary_semaphore cond{0};
         std::tuple<std::error_code, std::string> ret;
@@ -136,7 +135,7 @@ public:
                     co_await ConfigType::async_create_path(sp_path[i].data(), std::nullopt, sp_mode);
                 }
             }
-            ret = co_await ConfigType::async_create_path(path, value, create_mode);
+            ret = co_await ConfigType::async_create_path(path, std::move(value), create_mode);
             cond.release();
         }();
         cond.acquire();
@@ -153,10 +152,9 @@ public:
      * @param mode Default is persistent path
     */
     coro::coro_task<> async_create_path(std::string_view path, create_cb cb,
-        const std::optional<std::string>& value = std::nullopt,
+        std::optional<std::string> value = std::nullopt,
         create_mode mode = create_mode::persistent) {
         std::string p(path);
-        auto v = value;
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             auto sp_path = ConfigType::split_path(p);
@@ -166,7 +164,7 @@ public:
             }
         }
 
-        auto [ec, new_path] = co_await ConfigType::async_create_path(p, v, create_mode);
+        auto [ec, new_path] = co_await ConfigType::async_create_path(p, std::move(value), create_mode);
         if (cb) {
             cb(ec, std::move(new_path));
         }
