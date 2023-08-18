@@ -6,7 +6,7 @@ namespace coro {
 
 template <typename T>
 struct value_awaiter {
-    T data_;
+    T data_{};
     std::coroutine_handle<> coro_;
 
     bool await_ready() noexcept {
@@ -73,7 +73,7 @@ struct coro_task_promise_base {
 template<typename T>
 struct coro_task_promise : coro_task_promise_base<T> {
     std::coroutine_handle<coro_task_promise> handle_;
-    T value_;
+    T value_{};
 
     void return_value(T val) noexcept {
         //printf("coro address:%p\n", handle_.address());
