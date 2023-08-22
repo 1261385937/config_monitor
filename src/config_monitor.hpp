@@ -339,16 +339,15 @@ public:
                 async_watch_path(p, cb);
             }
         }
-        else {
-            if (ConfigType::is_no_node(ec)) {
-                for (;;) {
-                    auto eve = co_await ConfigType::async_watch_exists_path(main_path);
-                    if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
-                        co_return;
-                    }
-                    if (ConfigType::is_create_event(eve)) {
-                        break;
-                    }
+       
+        if (ec && ConfigType::is_no_node(ec)) {
+            for (;;) {
+                auto eve = co_await ConfigType::async_watch_exists_path(main_path);
+                if (ConfigType::is_session_event(eve) || ConfigType::is_notwatching_event(eve)) {
+                    co_return;
+                }
+                if (ConfigType::is_create_event(eve)) {
+                    break;
                 }
             }
         }
