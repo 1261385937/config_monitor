@@ -89,152 +89,157 @@ public:
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
 
-        using awaiter_type = coro::value_awaiter<std::tuple<std::error_code, std::string>>;
-        awaiter_type awaiter;
-        add_task([this, p = std::string(path), val = value, &awaiter]() mutable {
-            std::filesystem::path path(p);
-            std::error_code ec;
-            auto exist = std::filesystem::exists(path, ec);
-            if (ec) {
-                awaiter.set_value_then_resume(std::make_tuple(ec, std::string{}));
-                return;
-            }
-            if (exist) {
-                awaiter.set_value_then_resume(
-                    std::make_tuple(make_ec(file_err::already_exist), std::string{}));
-                return;
-            }
+        using value_type = std::tuple<std::error_code, std::string>;
+        auto call_back = [&](auto coro) {
+            this->add_task([this, path, value = std::move(value), coro]() {
+                std::filesystem::path fs_path(path);
+                std::error_code ec;
+                auto exist = std::filesystem::exists(fs_path, ec);
+                if (ec) {
+                    coro->set_resume_value(std::make_tuple(ec, std::string{}));
+                    coro->resume();
+                    return;
+                }
+                if (exist) {
+                    coro->set_resume_value(std::make_tuple(make_ec(file_err::already_exist), std::string{}));
+                    coro->resume();
+                    return;
+                }
 
-            auto parent_path = path.parent_path();
-            auto file_name = path.filename();
-            std::filesystem::create_directories(parent_path, ec);
-            if (ec) {
-                awaiter.set_value_then_resume(std::make_tuple(ec, std::string{}));
-                return;
-            }
-            auto err = set_file_value(p, val.has_value() ? val.value() : "", false);
-            awaiter.set_value_then_resume(std::make_tuple(err, std::move(p)));
-        });
-        co_return co_await awaiter;
+                auto parent_path = fs_path.parent_path();
+                std::filesystem::create_directories(parent_path, ec);
+                if (ec) {
+                    coro->set_resume_value(std::make_tuple(ec, std::string{}));
+                    coro->resume();
+                    return;
+                }
+                auto err = set_file_value(path, value.has_value() ? value.value() : "", false);
+                coro->set_resume_value(std::make_tuple(err, std::string(path)));
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
 
     coro::coro_task<std::error_code>
         async_delete_path(std::string_view path) {
-        using awaiter_type = coro::value_awaiter<std::error_code>;
-        awaiter_type awaiter;
-        add_task([p = std::string(path), &awaiter]() {
-            std::error_code ec;
-            auto exist = std::filesystem::exists(p);
-            if (!exist) {
-                awaiter.set_value_then_resume(make_ec(file_err::not_exist));
-                return;
-            }
+        auto call_back = [&](auto coro) {
+            this->add_task([path, coro]() {
+                std::error_code ec;
+                auto exist = std::filesystem::exists(path);
+                if (!exist) {
+                    coro->set_resume_value(make_ec(file_err::not_exist));
+                    coro->resume();
+                    return;
+                }
 
-            std::filesystem::remove_all(p, ec);
-            if (ec) {
-                awaiter.set_value_then_resume(ec);
-                return;
-            }
-            awaiter.set_value_then_resume(ec);
-        });
-        co_return co_await awaiter;
+                std::filesystem::remove_all(path, ec);
+                if (ec) {
+                    coro->set_resume_value(ec);
+                    coro->resume();
+                    return;
+                }
+                coro->set_resume_value(ec);
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
     }
 
     coro::coro_task<std::error_code>
         async_set_path_value(std::string_view path, std::string_view value) {
-        using awaiter_type = coro::value_awaiter<std::error_code>;
-        awaiter_type awaiter;
-        add_task([this, p = std::string(path), v = std::string(value), &awaiter]() {
-            auto err = set_file_value(p, v);
-            awaiter.set_value_then_resume(err);
-        });
-        co_return co_await awaiter;
+        auto call_back = [&](auto coro) {
+            this->add_task([this, path, value, coro]() {
+                auto err = set_file_value(path, value);
+                coro->set_resume_value(err);
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
     }
 
     // [create/change/delete] event
     coro::coro_task<file_event>
         async_watch_exists_path(std::string_view path) {
-        auto p = std::string(path);
-        std::error_code ig;
-        auto [_, time] = file_modify_time(p);
-        auto exist = std::filesystem::exists(p, ig);
-        using awaiter_type = coro::value_awaiter<file_event>;
-        awaiter_type awaiter;
+        auto call_back = [this, path](auto coro) {
+            std::error_code ig;
+            auto [_, time] = file_modify_time(path);
+            auto exist = std::filesystem::exists(path, ig);
+            auto p = std::string(path);
 
-        {
             std::unique_lock lock(task_mtx_);
-            monitor_exist_path_.emplace(p, [&awaiter](file_event eve) {
-                awaiter.set_value_then_resume(eve);
+            monitor_exist_path_.emplace(p, [coro](file_event eve) {
+                coro->set_resume_value(eve);
+                coro->resume();
             });
             last_existed_status_.emplace(std::move(p), existed_status{ exist, time });
-        }
-        co_return co_await awaiter;
+        };
+        co_return co_await coro::callback_awaiter<file_event, decltype(call_back)>{call_back};
     }
 
     // [child] event
     coro::coro_task<file_event>
         async_watch_sub_path(std::string_view path) {
-        using awaiter_type = coro::value_awaiter<file_event>;
-        awaiter_type awaiter;
-        auto p = std::string(path);
-        auto [_, sub_children] = get_path_children(path);
+        auto call_back = [&](auto coro) {
+            auto p = std::string(path);
+            auto [_, sub_children] = get_path_children(path);
 
-        {
             std::unique_lock lock(task_mtx_);
-            monitor_sub_path_.emplace(p, [&awaiter](file_event eve) {
-                awaiter.set_value_then_resume(eve);
+            monitor_sub_path_.emplace(p, [coro](file_event eve) {
+                coro->set_resume_value(eve);
+                coro->resume();
             });
             last_path_children_.emplace(std::move(p), std::move(sub_children));
-        }
-        co_return co_await awaiter;
+        };
+        co_return co_await coro::callback_awaiter<file_event, decltype(call_back)>{call_back};    
     }
 
     coro::coro_task<std::tuple<std::error_code, std::optional<std::string>>>
         async_get_path_value(std::string_view path) {
-        using awaiter_type = coro::value_awaiter<
-            std::tuple<std::error_code, std::optional<std::string>>>;
-        awaiter_type awaiter;
-        auto [_, timestamp] = file_modify_time(path);
-        auto p = std::string(path);
-        add_task([this, p = std::string(path), &awaiter]() {         
-            auto [ec, val] = get_file_value(p);
-            awaiter.set_value_then_resume(std::make_tuple(ec, std::move(val)));
-        });
-        co_return co_await awaiter;
+        using value_type = std::tuple<std::error_code, std::optional<std::string>>;
+        auto call_back = [this, path](auto coro) {
+            this->add_task([this, path, coro]() {
+                auto [ec, val] = get_file_value(path);
+                coro->set_resume_value(std::make_tuple(ec, std::move(val)));
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
 
     coro::coro_task<std::tuple<std::error_code, std::deque<std::string>>>
         async_get_sub_path(std::string_view path) {
-        auto p = std::string(path);
-        using awaiter_type = coro::value_awaiter<
-            std::tuple<std::error_code, std::deque<std::string>>>;
-        awaiter_type awaiter;
-        add_task([this, p = std::string(path), &awaiter]() {
-            auto [ec, children] = get_path_children(p);
-            awaiter.set_value_then_resume(std::make_tuple(ec, std::move(children)));
-        });
-        co_return co_await awaiter;
+        using value_type = std::tuple<std::error_code, std::deque<std::string>>;
+        auto call_back = [&](auto coro) {
+            this->add_task([this, path, coro]() {
+                auto [ec, children] = get_path_children(path);
+                coro->set_resume_value(std::make_tuple(ec, std::move(children)));
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
 
     coro::coro_task<std::error_code>
         async_remove_watches(std::string_view path, int watch_type) {
-        using awaiter_type = coro::value_awaiter<std::error_code>;
-        awaiter_type awaiter;
-        add_task([watch_type, this, p = std::string(path), &awaiter]() {
-            if (watch_type == 0) { //path
-                remove_monitor_exist_path(p);
-            }
-
-            if (watch_type == 1) { //sub-path
-                remove_monitor_sub_path(p);
-                auto [_, children] = get_path_children(p);
-                for (auto& sub : children) {
-                    remove_monitor_exist_path(std::string(p) + "/" + sub);
-                }                  
-            }
-            awaiter.set_value_then_resume(make_ec(file_err::ok));
-        });
-        co_return co_await awaiter;
+        auto call_back = [&](auto coro) {
+            this->add_task([this, watch_type, path, coro]() {
+                auto p = std::string(path);
+                if (watch_type == 0) { //path
+                    remove_monitor_exist_path(p);
+                }
+                if (watch_type == 1) { //sub-path
+                    remove_monitor_sub_path(p);
+                    auto [_, children] = get_path_children(p);
+                    for (auto& sub : children) {
+                        remove_monitor_exist_path(std::string(p) + "/" + sub);
+                    }
+                }
+                coro->set_resume_value(make_ec(file_err::ok));
+                coro->resume();
+            });
+        };
+        co_return co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};    
     }
 
 protected:
@@ -309,7 +314,7 @@ private:
                 return make_ec(file_err::not_exist);
             }
         }
-        
+
         auto file = fopen(path.data(), "wb");
         if (file == nullptr) {
             return make_ec(file_err::not_exist);
@@ -330,14 +335,14 @@ private:
         return { ec, timestamp };
     }
 
-    void remove_monitor_exist_path(const std::string& path) {     
-        std::unique_lock lock(task_mtx_);      
+    void remove_monitor_exist_path(const std::string& path) {
+        std::unique_lock lock(task_mtx_);
         last_existed_status_.erase(path);
         monitor_exist_path_.erase(path);
     }
 
-    void remove_monitor_sub_path(const std::string& path) {   
-        std::unique_lock lock(task_mtx_);       
+    void remove_monitor_sub_path(const std::string& path) {
+        std::unique_lock lock(task_mtx_);
         last_path_children_.erase(path);
         monitor_sub_path_.erase(path);
     }
@@ -374,7 +379,7 @@ private:
                 auto [_, this_modify_time] = file_modify_time(path);
                 if (!_ && (this_modify_time != last_status.modify_time)) {
                     remove_monitor_exist_path(path);
-                    monitor_exist_path[path](file_event::changed_event);              
+                    monitor_exist_path[path](file_event::changed_event);
                 }
                 continue;
             }
@@ -382,20 +387,20 @@ private:
             //last status is existed, this time not existed.
             if (last_status.existed == true) {
                 remove_monitor_exist_path(path);
-                monitor_exist_path[path](file_event::deleted_event); 
+                monitor_exist_path[path](file_event::deleted_event);
                 continue;
             }
 
             //last status is not existed, this time existed.
             if (last_status.existed == false) {
                 remove_monitor_exist_path(path);
-                monitor_exist_path[path](file_event::created_event);               
+                monitor_exist_path[path](file_event::created_event);
             }
         }
     }
 
-    void handle_monitor_sub(last_path_children_type last_sub_path,
-        monitor_sub_path_type monitor_sub_path) {
+    void handle_monitor_sub(last_path_children_type&& last_sub_path,
+        monitor_sub_path_type&& monitor_sub_path) {
         for (auto& [path, last_sub_children] : last_sub_path) {
             auto [ec, this_sub_children] = get_path_children(path);
             if (ec || (last_sub_children == this_sub_children)) {

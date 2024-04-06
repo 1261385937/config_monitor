@@ -4,40 +4,35 @@
 
 namespace coro {
 
-template <typename T>
-struct value_awaiter {
-    T data_{};
-    std::coroutine_handle<> coro_;
+template <typename RetType, typename Func>
+struct callback_awaiter {
+    Func cb_;
+    RetType result_;
+    std::coroutine_handle<> handle_;
 
-    bool await_ready() noexcept {
-        return false;
-    }
+    callback_awaiter(Func cb) : cb_(std::move(cb)) {}
+    bool await_ready() noexcept { return false; }
+    RetType await_resume() noexcept { return std::move(result_); }
+    void resume() noexcept { handle_.resume(); }
+    void set_resume_value(RetType t) noexcept { result_ = std::move(t); }
 
-    T await_resume() noexcept {
-        return data_;
-    }
-
-    void await_suspend(std::coroutine_handle<> p) noexcept {
-       // printf("await_suspend, coro address:%p\n", p.address());
-        coro_ = p;
-    }
-
-    void resume() {
-        //printf("\nresume, coro address:%p\n", coro_.address());
-        coro_.resume();
-    }
-
-    template<typename Ret>
-    void set_resume_value(Ret&& data) {
-        data_ = std::forward<Ret>(data);
-    }
-
-    template<typename Ret>
-    void set_value_then_resume(Ret&& data) {
-        this->set_resume_value(std::forward<Ret>(data));
-        this->resume();
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+        handle_ = handle;
+        cb_(this);
     }
 };
+
+//As the start coro. Never suspend
+struct detached_coro_task {
+    struct promise_type {
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_never final_suspend() noexcept { return {}; }
+        void return_void() noexcept {}
+        void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
+        detached_coro_task get_return_object() noexcept { return detached_coro_task{}; }
+    };
+};
+
 
 template<typename T>
 class coro_task;
@@ -47,57 +42,37 @@ struct coro_task_promise;
 
 template<typename T>
 struct coro_task_promise_base {
-    std::coroutine_handle<> caller_handle_ = nullptr;
-
-    std::suspend_never initial_suspend() noexcept {
-        /*printf("initial_suspend, coro address:%p\n",
-            static_cast<coro_task_promise<T>*>(this)->handle_.address());*/
-        return {};
-    }
-
-    std::suspend_never final_suspend() noexcept {
-       /* printf("final_suspend, coro address:%p\n",
-            static_cast<coro_task_promise<T>*>(this)->handle_.address());*/
-        if (caller_handle_) {
-           // printf("resume other coro address:%p\n", caller_handle_.address());
-            caller_handle_.resume();
+    struct final_awaiter {
+        bool await_ready() noexcept { return false; }
+        void await_resume() noexcept {}
+        template <typename PromiseType>
+        auto await_suspend(std::coroutine_handle<PromiseType> h) noexcept {
+            return h.promise().caller_handle_;
         }
-        return {};
-    }
+    };
 
-    void unhandled_exception() noexcept {
-        std::rethrow_exception(std::current_exception());
-    }
+    std::coroutine_handle<> caller_handle_ = nullptr;
+    std::suspend_always initial_suspend() noexcept { return {}; }
+    auto final_suspend() noexcept { return final_awaiter{}; }
+    void unhandled_exception() noexcept { std::rethrow_exception(std::current_exception()); }
 };
 
 template<typename T>
 struct coro_task_promise : coro_task_promise_base<T> {
-    std::coroutine_handle<coro_task_promise> handle_;
     T value_{};
-
-    void return_value(T val) noexcept {
-        //printf("coro address:%p\n", handle_.address());
-        value_ = std::move(val);
-    }
+    coro_task<T> get_return_object() noexcept;
+    void return_value(T val) noexcept { value_ = std::move(val); }
 
     std::suspend_always yield_value(T&& from) noexcept {
         value_ = std::move(from);
         return {};
     }
-
-    coro_task<T> get_return_object() noexcept;
 };
-
 
 template<>
 struct coro_task_promise<void> : coro_task_promise_base<void> {
-    std::coroutine_handle<coro_task_promise> handle_;
-
-    void return_void() noexcept {
-        //printf("return_void, coro address:%p\n", handle_.address());
-    }
-
     coro_task<void> get_return_object() noexcept;
+    void return_void() noexcept {}    
 };
 
 template <typename T = void>
@@ -105,61 +80,54 @@ class coro_task {
 public:
     using promise_type = coro_task_promise<T>;
 private:
-    std::coroutine_handle<promise_type> coro_;
+    std::coroutine_handle<promise_type> coro_handle_;
 
 public:
     coro_task(const coro_task&) = delete;
     coro_task& operator=(const coro_task&) = delete;
 
-    coro_task(std::coroutine_handle<promise_type> h) : coro_(h) {
-       // printf("begin, coro address:%p\n", coro_.address());
-    }
+    coro_task(std::coroutine_handle<promise_type> h) : coro_handle_(h) {}
 
     coro_task(coro_task&& other) noexcept
-        : coro_(std::move(other.coro_)) {
-       // printf("move, coro address:%p\n", coro_.address());
-        other.coro_ = nullptr;
+        : coro_handle_(std::move(other.coro_handle_)) {
+        other.coro_handle_ = nullptr;
     }
 
     ~coro_task() {
-      //  printf("end, coro address:%p\n\n", coro_.address());
+        if (coro_handle_) {
+            coro_handle_.destroy();
+            coro_handle_ = nullptr;
+        }
     }
 
-    constexpr bool await_ready() const noexcept {
-        return false;
-    }
+    constexpr bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> h) noexcept {
-       // printf("await_suspend, coro address:%p\n", h.address());
-        coro_.promise().caller_handle_ = h;
+    auto await_suspend(std::coroutine_handle<> h) noexcept {
+        coro_handle_.promise().caller_handle_ = h;
+        return coro_handle_;
     }
 
     T await_resume() noexcept {
         if constexpr (!std::is_same_v<T, void>) {
-            return coro_.promise().value_;
+            auto r = std::move(coro_handle_.promise().value_);
+            coro_handle_.destroy();
+            coro_handle_ = nullptr;
+            return r;
         }
-    }
-
-    T get_value() {
-        if constexpr (!std::is_same_v<T, void>) {
-            return coro_.promise().value_;
-        }
+        else {
+            coro_handle_.destroy();
+            coro_handle_ = nullptr;
+        } 
     }
 };
 
 template <typename T>
 inline coro_task<T> coro_task_promise<T>::get_return_object() noexcept {
-    handle_ = std::coroutine_handle<coro_task_promise>::from_promise(*this);
-   // printf("get_return_object, coro address:%p\n", handle_.address());
-    auto tk = coro_task<T>{ handle_ };
-    return tk;
+    return coro_task<T>{ std::coroutine_handle<coro_task_promise>::from_promise(*this) };
 }
 
 inline coro_task<void> coro_task_promise<void>::get_return_object() noexcept {
-    handle_ = std::coroutine_handle<coro_task_promise>::from_promise(*this);
-   // printf("get_return_object, coro address:%p\n", handle_.address());
-    auto tk = coro_task<void>{ handle_ };
-    return tk;
+    return coro_task<void>{ std::coroutine_handle<coro_task_promise>::from_promise(*this) };
 }
 
 }

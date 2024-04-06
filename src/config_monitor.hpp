@@ -126,7 +126,7 @@ public:
                      create_mode mode = create_mode::persistent) {
         std::binary_semaphore cond{0};
         std::tuple<std::error_code, std::string> ret;
-        [this, &cond, &ret, path, &value, mode]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path, &value, mode]() ->coro::detached_coro_task {
             auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
             if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
                 auto sp_path = ConfigType::split_path(path);
@@ -151,7 +151,7 @@ public:
      * @param value Set the path initial value when created
      * @param mode Default is persistent path
     */
-    coro::coro_task<> async_create_path(std::string_view path, create_cb cb,
+    coro::detached_coro_task async_create_path(std::string_view path, create_cb cb,
         std::optional<std::string> value = std::nullopt,
         create_mode mode = create_mode::persistent) {
         std::string p(path);
@@ -179,7 +179,7 @@ public:
     auto set_path_value(std::string_view path, std::string_view value) {
         std::binary_semaphore cond{0};
         std::error_code ret;
-        [this, &cond, &ret, path, value]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path, value]() ->coro::detached_coro_task {
             ret = co_await ConfigType::async_set_path_value(path, value);
             cond.release();
         }();
@@ -193,7 +193,7 @@ public:
     * @param value The changed value
     * @param callback
    */
-    coro::coro_task<> async_set_path_value(std::string_view path,
+    coro::detached_coro_task async_set_path_value(std::string_view path,
         std::string_view value, operate_cb callback) {
         auto ec = co_await ConfigType::async_set_path_value(path, value);
         if (callback) {
@@ -208,9 +208,9 @@ public:
      * @return std::error_code
     */
     auto del_path(std::string_view path) {
-        std::binary_semaphore cond{0};
+        std::binary_semaphore cond{ 0 };
         std::error_code ret;
-        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path]() ->coro::detached_coro_task {
             ret = co_await ConfigType::async_delete_path(path);
             cond.release();
         }();
@@ -224,7 +224,7 @@ public:
     * @param path The target path
     * @param callback
    */
-    coro::coro_task<> async_del_path(std::string_view path, operate_cb callback) {
+    coro::detached_coro_task async_del_path(std::string_view path, operate_cb callback) {
         auto ec = co_await ConfigType::async_delete_path(path);
         if (callback) {
             callback(ec);
@@ -237,9 +237,9 @@ public:
      * @return [std::error_code, value]
     */
     auto watch_path(std::string_view path) {
-        std::binary_semaphore cond{0};
+        std::binary_semaphore cond{ 0 };
         std::tuple<std::error_code, std::optional<std::string>> ret;
-        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path]() ->coro::detached_coro_task {
             ret = co_await ConfigType::async_get_path_value(path);
             cond.release();
         }();
@@ -255,7 +255,7 @@ public:
      * @param cb Callback, 2th arg is changed value.
      * If the event is del, then the changed value must be empty.
     */
-    coro::coro_task<> async_watch_path(std::string_view path, watch_cb cb) {
+    coro::detached_coro_task async_watch_path(std::string_view path, watch_cb cb) {
         auto p = std::string(path);
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
@@ -293,7 +293,7 @@ public:
     auto watch_sub_path(std::string_view path) {
         std::binary_semaphore cond{0};
         std::tuple<std::error_code, std::unordered_map<std::string, std::optional<std::string>>> ret;
-        [this, &cond, &ret, path]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path]() ->coro::detached_coro_task {
             auto [ec, sub_paths] = co_await ConfigType::async_get_sub_path(path);
             std::unordered_map<std::string, std::optional<std::string>> mapping_values;
             if (ec) {
@@ -324,7 +324,7 @@ public:
      * @param cb Callback, 2th arg is changed value.
      * If the event is del, then the changed value must be empty.
     */
-    coro::coro_task<> async_watch_sub_path(std::string_view path, watch_cb cb) {
+    coro::detached_coro_task async_watch_sub_path(std::string_view path, watch_cb cb) {
         auto main_path = std::string(path);
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
@@ -397,7 +397,7 @@ public:
     auto remove_watches(std::string_view path, watch_type type) {
         std::binary_semaphore cond{0};
         std::error_code ret;
-        [this, &cond, &ret, path, type]() ->coro::coro_task<void> {
+        [this, &cond, &ret, path, type]() ->coro::detached_coro_task {
             auto p = std::string(path);
             ret = co_await ConfigType::async_remove_watches(path, (int)type);
             if (ret) {
@@ -431,7 +431,7 @@ public:
      * @param type Watch type, path or sub-path
      * @param callback
     */
-    coro::coro_task<>
+    coro::detached_coro_task
         async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
         auto p = std::string(path);
         auto ret = co_await ConfigType::async_remove_watches(path, (int)type);
