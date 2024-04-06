@@ -128,10 +128,10 @@ public:
                 coro->set_resume_value(std::make_tuple(std::move(ec), std::move(val)));
                 coro->resume();
             }, coro);
-            
-            /*if (r != ZOK) {
+
+            if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_acreate2_ttl error: ") + zerror(r));
-            }*/
+            }
         };
         co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
@@ -152,9 +152,9 @@ public:
                     coro->resume();
                 }, coro);
 
-               /* if (r != ZOK) {
+                if (r != ZOK) {
                     throw std::runtime_error(std::string("zoo_adelete error: ") + zerror(r));
-                }*/
+                }
             };
             auto ec = co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
             if (ec) {
@@ -175,9 +175,9 @@ public:
                 coro->resume();
             }, coro);
 
-           /* if (r != ZOK) {
+            if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_aset error: ") + zerror(r));
-            }*/
+            }
         };
         co_return co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
     }
@@ -199,13 +199,12 @@ public:
                 coro->set_resume_value((zk_event)eve);
                 coro->resume();
             };
-
             auto completion = [](int, const struct Stat*, const void*) {};
             auto r = zoo_awexists(zh_, path.data(), wfn, coro, completion, nullptr);
 
-            /*if (r != ZOK) {
+            if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_awexists error: ") + zerror(r));
-            }*/
+            }
         };    
         co_return co_await coro::callback_awaiter<zk_event, decltype(call_back)>{call_back};
     }
@@ -227,13 +226,12 @@ public:
                 coro->set_resume_value((zk_event)eve);
                 coro->resume();
             };
-
             auto null_cb = [](int, const struct String_vector*, const struct Stat*, const void*) {};
             auto r = zoo_awget_children2(zh_, path.data(), wfn, coro, null_cb, nullptr);
 
-            /*if (r != ZOK) {
+            if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_awget_children2 error: ") + zerror(r));
-            }*/
+            }
         };
         co_return co_await coro::callback_awaiter<zk_event, decltype(call_back)>{call_back};
     }
@@ -250,12 +248,11 @@ public:
                 coro->set_resume_value(std::make_tuple(make_ec(rc), std::move(dummy)));
                 coro->resume();
             };
-
             auto r = zoo_awget(zh_, path.data(), nullptr, nullptr, cb, coro);
 
-            /* if (r != ZOK) {
+             if (r != ZOK) {
                  throw std::runtime_error(std::string("zoo_awget error: ") + zerror(r));
-             }*/
+             }
         };
         co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
@@ -279,12 +276,11 @@ public:
                 coro->set_resume_value(std::make_tuple(make_ec(rc), std::move(children_path)));
                 coro->resume();
             };
-
             auto r = zoo_awget_children2(zh_, path.data(), nullptr, nullptr, completion, coro);
 
-            /*if (r != ZOK) {
+            if (r != ZOK) {
                 throw std::runtime_error(std::string("zoo_awget_children2 error: ") + zerror(r));
-            }*/
+            }
         };       
         co_return co_await coro::callback_awaiter<value_type, decltype(call_back)>{call_back};
     }
@@ -299,13 +295,12 @@ public:
                     coro->set_resume_value(make_ec(rc));
                     coro->resume();
                 };
-
                 auto r = zoo_aremove_all_watches(zh_, path.data(),
                     ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, coro);
 
-                /* if (r != ZOK) {
+                 if (r != ZOK) {
                      throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
-                 }*/
+                 }
             };
             co_return co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
         }
@@ -318,13 +313,12 @@ public:
                     coro->set_resume_value(make_ec(rc));
                     coro->resume();
                 };
-
                 auto r = zoo_aremove_all_watches(zh_, path.data(),
                     ZWATCHTYPE_CHILD, 0, (void_completion_t*)completion, coro);
 
-                /* if (r != ZOK) {
+                 if (r != ZOK) {
                      throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
-                 }*/
+                 }
             };
             auto ec = co_await coro::callback_awaiter<std::error_code, decltype(call_back)>{call_back};
             if (ec) {
@@ -340,14 +334,13 @@ public:
                         coro->set_resume_value(make_ec(rc));
                         coro->resume();
                     };
-
                     auto full = std::string(path) + "/" + sub;
                     auto r = zoo_aremove_all_watches(zh_, full.data(),
                         ZWATCHTYPE_DATA, 0, (void_completion_t*)completion, coro);
 
-                    /* if (r != ZOK) {
+                     if (r != ZOK) {
                          throw std::runtime_error(std::string("zoo_aremove_all_watches error: ") + zerror(r));
-                     }*/
+                     }
                 };
                 ec = co_await coro::callback_awaiter<std::error_code, decltype(cb)>{cb};
                 if (ec) {

@@ -16,7 +16,7 @@ struct callback_awaiter {
     void resume() noexcept { handle_.resume(); }
     void set_resume_value(RetType t) noexcept { result_ = std::move(t); }
 
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    void await_suspend(std::coroutine_handle<> handle) {
         handle_ = handle;
         cb_(this);
     }
