@@ -19,7 +19,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
-#include "cppzk_define.h"
+#include "cppzk_redeclare.h"
 
 namespace zk {
 class cppzk {
@@ -71,16 +71,8 @@ public:
         std::call_once(of_, [this]() { detect_expired_session(); });
     }
 
-    zk_error clear_resource() {
-        return static_cast<zk_error>(zookeeper_close(zh_));
-    }
-
-    zk_error handle_state() {
-        return static_cast<zk_error>(zoo_state(zh_));
-    }
-
-    std::string last_error(zk_error e) {
-        return zerror((int)e);
+    std::error_code clear_resource() {
+        return make_ec(zookeeper_close(zh_));
     }
 
     void set_log_level(zk_loglevel level) {
@@ -102,8 +94,7 @@ public:
         return {};
     }
 
-    template <bool Advanced = true>
-    zk_error create_path(std::string_view path, std::string_view value, zk_create_mode mode,
+    void async_create_path(std::string_view path, std::string_view value, zk_create_mode mode,
                          create_callback ccb, int64_t ttl = -1,
                          zk_acl acl = zk_acl::zk_open_acl_unsafe) {
         auto data = new create_callback{ std::move(ccb) };
@@ -116,15 +107,6 @@ public:
             throw std::runtime_error("enable_ttl, ttl must > 0");
         }
 
-        if constexpr (Advanced) {
-            auto sp_path = split_path(path);
-            std::string new_path;
-            for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-                zoo_create2_ttl(zh_, sp_path[i].data(), nullptr, 0,
-                                &acl_mapping[acl], (int)mode, ttl, nullptr, 0, nullptr);
-            }
-        }
-
         auto value_ptr = value.empty() ? nullptr : value.data();
         auto value_len = value.empty() ? 0 : (int)value.length();
         auto r = zoo_acreate2_ttl(
@@ -132,25 +114,21 @@ public:
             [](int rc, const char* string, const struct Stat*, const void* data) {
             auto cb = (create_callback*)data;
             if ((*cb)) {
-                (*cb)((zk_error)rc, string == nullptr ? std::string{} : std::string(string));
+                (*cb)(make_ec(rc), string == nullptr ? std::string{} : std::string(string));
             }
             delete cb;
         }, data);
 
         if (r != ZOK) {
-            printf("create_path error: %s\n", zerror(r));
+            throw std::runtime_error(std::string("zoo_acreate2_ttl error: ") + zerror(r));
         }
-        return (zk_error)r;
     }
 
-    template <bool Advanced = true>
-    zk_error delete_path(std::string_view path, delete_callback dcb) {
-        if constexpr (Advanced) {
-            std::deque<std::string> sub_paths;
-            recursive_get_sub_path(path, sub_paths);
-            for (auto& sub : sub_paths) {
-                zoo_delete(zh_, sub.data(), -1);
-            }
+    void delete_path(std::string_view path, delete_callback dcb) {
+        std::deque<std::string> sub_paths;
+        recursive_get_sub_path(path, sub_paths);
+        for (auto& sub : sub_paths) {
+            zoo_delete(zh_, sub.data(), -1);
         }
 
         auto data = new delete_callback{ std::move(dcb) };
@@ -165,7 +143,6 @@ public:
         if (r != ZOK) {
             printf("delete_path error: %s\n", zerror(r));
         }
-        return (zk_error)r;
     }
 
     zk_error set_path_value(std::string_view path, std::string_view value, set_callback scb) {
@@ -442,8 +419,8 @@ private:
     }
 
 protected:
-    std::error_code make_error_code(zk_error err) {
-        return { static_cast<int>(err), zk::category() };
+    static std::error_code make_ec(int err) {
+        return { err, zk::category() };
     }
 
     bool is_no_error(zk_error err) {
