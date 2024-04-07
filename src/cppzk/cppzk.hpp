@@ -108,10 +108,9 @@ public:
         }
 
         auto value_ptr = value.empty() ? nullptr : value.data();
-        auto value_len = value.empty() ? 0 : (int)value.length();
-        auto r = zoo_acreate2_ttl(
-            zh_, path.data(), value_ptr, value_len, &acl_mapping[acl], (int)mode, ttl,
-            [](int rc, const char* string, const struct Stat*, const void* data) {
+        auto len = value.empty() ? 0 : (int)value.length();
+        auto r = zoo_acreate2_ttl(zh_, path.data(), value_ptr, len, &acl_mapping[acl], (int)mode, ttl,
+        [](int rc, const char* string, const struct Stat*, const void* data) {
             auto cb = (create_callback*)data;
             if ((*cb)) {
                 (*cb)(make_ec(rc), string == nullptr ? std::string{} : std::string(string));
@@ -124,35 +123,29 @@ public:
         }
     }
 
-    void delete_path(std::string_view path, delete_callback dcb) {
-        std::deque<std::string> sub_paths;
-        recursive_get_sub_path(path, sub_paths);
-        for (auto& sub : sub_paths) {
-            zoo_delete(zh_, sub.data(), -1);
-        }
-
+    void async_delete_path(std::string_view path, delete_callback dcb) {
         auto data = new delete_callback{ std::move(dcb) };
         auto r = zoo_adelete(zh_, path.data(), -1, [](int rc, const void* data) {
             auto cb = (delete_callback*)data;
             if ((*cb)) {
-                (*cb)((zk_error)rc);
+                (*cb)(make_ec(rc));
             }
             delete cb;
         }, data);
 
         if (r != ZOK) {
-            printf("delete_path error: %s\n", zerror(r));
+            throw std::runtime_error(std::string("zoo_adelete error: ") + zerror(r));
         }
     }
 
-    zk_error set_path_value(std::string_view path, std::string_view value, set_callback scb) {
+    void async_set_path_value(std::string_view path, std::string_view value, set_callback scb) {
         auto data = new set_callback{ std::move(scb) };
         auto r = zoo_aset(
             zh_, path.data(), value.data(), (int)value.length(), -1,
             [](int rc, const struct Stat*, const void* data) {
             auto cb = (set_callback*)data;
             if ((*cb)) {
-                (*cb)((zk_error)rc);
+                (*cb)(make_ec(rc));
             }
             delete cb;
         }, data);
@@ -160,12 +153,11 @@ public:
         if (r != ZOK) {
             printf("set_path_value error: %s\n", zerror(r));
         }
-        return (zk_error)r;
     }
 
     // [create/delete/changed] event just for current path
     template <bool Advanced = true>
-    zk_error exists_path(std::string_view path, exists_callback ecb) {
+    void exists_path(std::string_view path, exists_callback ecb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto eud = (exists_userdata*)watcherCtx;
             if (eve == ZOO_SESSION_EVENT) {
@@ -215,7 +207,7 @@ public:
 
     // [changed] event just for current path, if the path exists all the time
     template <bool Advanced = true>
-    zk_error get_path_value(std::string_view path, get_callback gcb) {
+    void get_path_value(std::string_view path, get_callback gcb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto d = static_cast<wget_userdata*>(watcherCtx);
             if (eve == ZOO_SESSION_EVENT) {
@@ -267,7 +259,7 @@ public:
 
     // [create/delete] sub path event just for current path, if the path exists all the time
     template <bool Advanced = true>
-    zk_error get_sub_path(std::string_view path, get_children_callback gccb) {
+    void get_sub_path(std::string_view path, get_children_callback gccb) {
         auto wfn = [](zhandle_t*, int eve, int, const char* path, void* watcherCtx) {
             auto d = static_cast<get_children_userdata*>(watcherCtx);
             if (eve == ZOO_SESSION_EVENT) {
@@ -330,11 +322,11 @@ public:
         return (zk_error)r;
     }
 
-    zk_error remove_watches(std::string_view path, int watch_type, delete_callback cb) {
+    void remove_watches(std::string_view path, int watch_type, delete_callback cb) {
         void_completion_t completion = [](int rc, const void* data) {
             auto cb = (delete_callback*)data;
             if ((*cb)) {
-                (*cb)((zk_error)rc);
+                (*cb)(make_ec(rc));
             }
             delete cb;
         };
@@ -343,7 +335,7 @@ public:
 
         if (watch_type == 1) { //sub_path
             std::promise<std::vector<std::string>> pro;
-            get_sub_path<false>(path, [&pro](zk_error, zk_event, std::vector<std::string>&& children) {
+            get_sub_path<false>(path, [&pro](std::error_code, zk_event, std::vector<std::string>&& children) {
                 pro.set_value(std::move(children));
             });
             auto sub_paths = pro.get_future().get();
@@ -363,7 +355,6 @@ public:
         if (r != ZOK) {
             printf("remove_watches error: %s\n", zerror(r));
         }
-        return (zk_error)r;
     }
 
 private:
@@ -423,12 +414,8 @@ protected:
         return { err, zk::category() };
     }
 
-    bool is_no_error(zk_error err) {
-        return err == zk_error::zk_ok;
-    }
-
-    bool is_no_node(zk_error err) {
-        return err == zk_error::zk_no_node;
+    bool is_no_node(const std::error_code& err) {
+        return err.value() == ZOO_ERRORS::ZNONODE;
     }
 
     bool is_dummy_event(zk_event eve) {
@@ -502,7 +489,7 @@ protected:
 
     void recursive_get_sub_path(std::string_view path, std::deque<std::string>& sub_paths) {
         std::promise<std::vector<std::string>> pro;
-        get_sub_path<false>(path, [&pro](zk_error, zk_event, std::vector<std::string>&& children) {
+        get_sub_path<false>(path, [&pro](std::error_code, zk_event, std::vector<std::string>&& children) {
             pro.set_value(std::move(children));
         });
         auto children = pro.get_future().get();
