@@ -132,7 +132,12 @@ public:
                 auto sp_path = ConfigType::split_path(path);
                 auto sp_mode = ConfigType::get_create_mode((int)create_mode::persistent);
                 for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-                    co_await ConfigType::async_create_path(sp_path[i].data(), std::nullopt, sp_mode);
+                    ret = co_await ConfigType::async_create_path(sp_path[i].data(), std::nullopt, sp_mode);
+                    auto& ec = std::get<0>(ret);
+                    if (ec && !ConfigType::is_node_exist(ec)) {
+                        cond.release();
+                        co_return;
+                    };
                 }
             }
             ret = co_await ConfigType::async_create_path(path, std::move(value), create_mode);

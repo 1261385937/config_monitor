@@ -38,6 +38,9 @@ private:
     zhandle_t* zh_{};
     std::string hosts_;
     int unused_flags_ = 0;
+    std::string schema_;
+    std::string credential_;
+    std::string cert_;
 
     std::thread detect_expired_thread_;
     std::atomic<int> session_timeout_ms_ = -1;
@@ -70,12 +73,15 @@ public:
 
     // If enable ssl, param cert like this "server.crt,client.crt,client.pem,passwd"
     // Or defualt value disbale ssl
-    void initialize(std::string_view hosts, int session_timeout_ms,
-                    const char* cert = "", int unused_flags = 0) {
+    void initialize(std::string_view hosts, int session_timeout_ms, std::string_view schema = "",
+        std::string_view credential = "", const char* cert = "", int unused_flags = 0) {
         hosts_ = hosts;
         session_timeout_ms_ = session_timeout_ms;
+        schema_ = schema;
+        credential_ = credential;
+        cert_ = cert;
         unused_flags_ = unused_flags;
-        connect_server(cert);
+        connect_server();
         std::call_once(of_, [this]() { detect_expired_session(); });
     }
 
@@ -369,7 +375,7 @@ private:
         });
     }
 
-    void connect_server(const char* cert = "") {
+    void connect_server() {
         auto watcher = [](zhandle_t*, int type, int state, const char*, void* watcherCtx) {
             auto self = (cppzk*)(watcherCtx);
             if (state == ZOO_CONNECTED_STATE && type == ZOO_SESSION_EVENT) {
@@ -382,11 +388,10 @@ private:
             }
         };
 #ifdef HAVE_OPENSSL_H
-        zh_ = zookeeper_init_ssl(hosts_.c_str(), cert,
+        zh_ = zookeeper_init_ssl(hosts_.data(), cert_.data(),
                                  watcher, session_timeout_ms_, nullptr, this, 0);
 #else
         zh_ = zookeeper_init(hosts_.c_str(), watcher, session_timeout_ms_, nullptr, this, 0);
-        (void)cert;
 #endif
         if (!zh_) {
             throw std::runtime_error("zookeeper_init error");
@@ -394,6 +399,13 @@ private:
 
         while (!is_conntected_ && run_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!schema_.empty() && !credential_.empty()) {
+            auto r = zoo_add_auth(zh_, schema_.data(), credential_.data(), (int)credential_.size(),
+                nullptr, nullptr);
+            if (r != ZOK) {
+                throw std::runtime_error(std::string("zoo_add_auth error: ") + zerror(r));
+            }
         }
 
         need_detect_ = true;
@@ -404,9 +416,13 @@ protected:
     static std::error_code make_ec(int err) {
         return { err, zk::category() };
     }
-
+    
     bool is_no_node(const std::error_code& err) {
         return err.value() == ZOO_ERRORS::ZNONODE;
+    }
+
+    bool is_node_exist(const std::error_code& err) {
+        return err.value() == ZOO_ERRORS::ZNODEEXISTS;
     }
 
     bool is_create_event(zk_event eve) {
