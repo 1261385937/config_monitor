@@ -9,6 +9,8 @@ using namespace std::chrono_literals;
 struct zk_info {
     std::string ips;
     int tiemout;
+    std::string schema;
+    std::string credential;
 };
 
 class cppzk_test : public testing::TestWithParam<zk_info> {
@@ -31,7 +33,8 @@ public:
     void SetUp() override {
         if (!is_init_) {
             is_init_ = true;
-            cm::config_monitor<zk::cppzk>::instance().init(GetParam().ips, GetParam().tiemout);
+            cm::config_monitor<zk::cppzk>::instance().init(
+                GetParam().ips, GetParam().tiemout, GetParam().schema, GetParam().credential);
         }
     }
 
@@ -503,4 +506,4 @@ TEST_P(cppzk_test, async_watch_sub_path_delete_path) {
 
 
 INSTANTIATE_TEST_SUITE_P(cppzk_test_set, cppzk_test,
-                         ::testing::Values(zk_info{ "192.168.152.137:2181", 40000 }));
+    ::testing::Values(zk_info{ "192.168.152.137:2181", 40000, "digest", "root:111" }));
