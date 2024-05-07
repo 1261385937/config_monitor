@@ -134,11 +134,6 @@ public:
                 }
 
                 std::filesystem::remove_all(path, ec);
-                if (ec) {
-                    coro->set_resume_value(ec);
-                    coro->resume();
-                    return;
-                }
                 coro->set_resume_value(ec);
                 coro->resume();
             });
