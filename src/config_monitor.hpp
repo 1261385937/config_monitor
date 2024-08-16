@@ -58,8 +58,7 @@ inline constexpr bool always_false_v = false;
 template <typename ConfigType>
 class config_monitor : public ConfigType {
 public:
-    using watch_cb = std::function<void(path_event, std::string&&)>;
-    using mapping_watch_cb = std::function<void(path_event, std::string&&, const std::string&)>;
+    using watch_cb = std::function<void(path_event, std::optional<std::string>&&, const std::string&)>;
     using operate_cb = std::function<void(const std::error_code&)>;
     using create_cb = std::function<void(const std::error_code&, std::string&&)>;
 
@@ -68,7 +67,6 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string>> last_sub_path_;
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> sub_path_value_;
     std::unordered_map<std::string, std::unordered_map<watch_type, watch_cb>> record_;
-    std::unordered_map<std::string, std::pair<watch_type, mapping_watch_cb>> mapping_record_;
     std::mutex record_mtx_;
 
 public:
@@ -100,19 +98,14 @@ public:
                 if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
                     std::unique_lock<std::mutex> lock(record_mtx_);
                     auto record = std::move(record_);
-                    auto mapping_record = std::move(mapping_record_);
                     lock.unlock();
                     for (auto& [path, pair] : record) {
                         for (auto& [watch_type, cb] : pair) {
                             watch_type == watch_type::watch_path ?
                                 async_watch_path(path, std::move(cb)) :
-                                async_watch_sub_path<false>(path, std::move(cb));
+                                async_watch_sub_path(path, std::move(cb));
                         }
-                    }
-                    //Here just watch_sub_path
-                    for (auto& [path, pair] : mapping_record) {
-                        async_watch_sub_path(path, std::move(pair.second));
-                    }
+                    }            
                 }
             });
         }
@@ -120,22 +113,39 @@ public:
     }
 
     /**
-     * @brief Sync create full path.
+    * @brief Sync create full path.
+    * If the path depth more than 1, the prefix path will be created automatically.
+    *
+    * @param path The full path need to be created
+    * @param value The path initial value when created
+    * @param mode Default is persistent path
+    * @return [std::error_code, path_name], a new path name if mode is sequential
+   */
+    auto create_path(std::string_view path, std::optional<std::string> value = std::nullopt,
+        create_mode mode = create_mode::persistent) {
+        auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
+        return ConfigType::create_path(path, value, create_mode);
+    }
+
+    /**
+     * @brief Async create full path.
      * If the path depth more than 1, the prefix path will be created automatically.
      *
      * @param path The full path need to be created
-     * @param value The path initial value when created
+     * @param cb Callback, 2th arg is a new path name if mode is sequential
+     * @param value Set the path initial value when created
      * @param mode Default is persistent path
-     * @return [std::error_code, path_name], a new path name if mode is sequential
     */
-    auto create_path(std::string_view path, std::string_view value = "",
-                     create_mode mode = create_mode::persistent) {
+    void async_create_path(std::string path, create_cb cb,
+        std::optional<std::string> value = std::nullopt,
+        create_mode mode = create_mode::persistent) {
         auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-        std::promise<std::pair<std::error_code, std::string>> pro;
-        ConfigType::create_path(path, value, create_mode, [this, &pro](auto e, std::string&& path) {
-            pro.set_value({ ConfigType::make_error_code(e), std::move(path) });
+        ConfigType::async_create_path(path, value, create_mode, 
+            [cb, path, depth](auto ec, std::string&& new_path) {
+            if (cb) {
+                cb(ec, std::move(path));
+            }
         });
-        return pro.get_future().get();
     }
 
     /**
@@ -145,25 +155,45 @@ public:
      * @return std::error_code
     */
     auto set_path_value(std::string_view path, std::string_view value) {
-        std::promise<std::error_code> pro;
-        ConfigType::set_path_value(path, value, [this, &pro](auto e) {
-            pro.set_value(ConfigType::make_error_code(e));
-        });
-        return pro.get_future().get();
+        return ConfigType::set_path_value(path, value);
     }
 
     /**
-     * @brief Sync delete the path (include their sub path).
+    * @brief Async change a path value if path exist
+    * @param path The target path
+    * @param value The changed value
+    * @param callback
+   */
+    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
+        ConfigType::async_set_path_value(path, value, [cb = std::move(callback)](auto ec) {
+            if (cb) {
+                cb(ec);
+            }
+        });
+    }
+
+    /**
+    * @brief Sync delete the path (include their sub path).
+    *
+    * @param path The target path
+    * @return std::error_code
+   */
+    auto del_path(std::string_view path) {
+        return ConfigType::del_path(path);
+    }
+
+    /**
+     * @brief Async delete the path (include their sub path).
      *
      * @param path The target path
-     * @return std::error_code
+     * @param callback
     */
-    auto del_path(std::string_view path) {
-        std::promise<std::error_code> pro;
-        ConfigType::delete_path(path, [this, &pro](auto e) {
-            pro.set_value(ConfigType::make_error_code(e));
+    void async_del_path(std::string_view path, operate_cb callback) {
+        ConfigType::async_delete_path(path, [this, cb = std::move(callback)](auto ec) {
+            if (cb) {
+                cb(ec);
+            }
         });
-        return pro.get_future().get();
     }
 
     /**
@@ -172,28 +202,57 @@ public:
      * @return [std::error_code, value]
     */
     auto watch_path(std::string_view path) {
-        std::promise<std::pair<std::error_code, std::string>> pro;
-        ConfigType::template get_path_value<false>(
-            path, [this, &pro](auto e, std::optional<std::string>&& value) {
-            pro.set_value({ ConfigType::make_error_code(e),
-                          value.has_value() ? std::move(value.value()) : std::string{} });
+        std::promise<std::tuple<std::error_code, std::optional<std::string>>> pro;
+        ConfigType::get_path_value(path, [this, &pro](auto ec, std::optional<std::string>&& val) {
+            pro.set_value({ ec, std::move(val) });
         });
         return pro.get_future().get();
     }
 
     /**
+    * @brief Async get the path value.
+    * Also valid for a non existed path. The monitor will start after the target path is created.
+    *
+    * @param path The target path
+    * @param cb Callback, 2th arg is changed value.
+    * If the event is del, then the changed value must be empty.
+   */
+    void async_watch_path(std::string_view path, watch_cb cb) {
+        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
+            std::unique_lock<std::mutex> lock(record_mtx_);
+            record_[std::string(path)].emplace(watch_type::watch_path, cb);
+            lock.unlock();
+        }
+
+        ConfigType::async_watch_exists_path(path, [this, cb, p = std::string(path)](auto err, auto eve) {
+            if (!ConfigType::is_no_error(err)) {
+                return;
+            }
+
+            if (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve)) {
+                ConfigType::async_get_path_value(p, [cb, this](auto err, auto&& value) {
+                    if (ConfigType::is_no_node(err)) {
+                        //watch_path do not need content when del event, the mapping is explicit
+                        return cb(path_event::del, {});
+                    }
+                    if (ConfigType::is_no_error(err) && value.has_value()) {
+                        cb(path_event::changed, std::move(value.value()));
+                    }
+                });
+            }
+        });
+    }
+
+    /**
      * @brief Sync get children path value of the target path just once. Path must be existed.
-     * @tparam Mapping Enable mapping or not. If enable, [subpath, value] mapping will be return.
      * @param path The target path
-     * @return
-     * [std::error_code, std::vector<std::string> or std::unordered_map<std::string, std::string>]
+     * @return [std::error_code, std::unordered_map<std::string, std::optional<std::string>>]
     */
-    template<bool Mapping = true>
     auto watch_sub_path(std::string_view path) {
         using sub_paths_type = std::conditional_t<std::is_same_v<ConfigType, zk::cppzk>,
             std::vector<std::string>, std::deque<std::string>>;
         std::promise<std::pair<std::error_code, sub_paths_type>> pro;
-        ConfigType::template get_sub_path<false>(path, [this, &pro](auto e, auto, auto&& sub_paths) {
+        ConfigType::get_sub_path(path, [this, &pro](auto e, auto, auto&& sub_paths) {
             pro.set_value({ ConfigType::make_error_code(e), std::move(sub_paths) });
         });
 
@@ -201,12 +260,7 @@ public:
         std::unordered_map<std::string, std::string> mapping_values;
         auto [ec, sub_paths] = pro.get_future().get();
         if (ec) {
-            if constexpr (Mapping) {
-                return std::pair{ ec, mapping_values };
-            }
-            else {
-                return std::pair{ ec, values };
-            }
+            return std::pair{ ec, values };
         }
 
         auto children_size = sub_paths.size();
@@ -221,189 +275,42 @@ public:
                 it = sub_paths.erase(it);
             }
         }
-
-        if constexpr (Mapping) {
-            size_t index = 0;
-            for (auto& sub_path : sub_paths) {
-                mapping_values.emplace(std::move(sub_path), std::move(values[index]));
-                index++;
-            }
-            return std::pair{ ec, std::move(mapping_values) };
-        }
-        else {
-            return std::pair{ ec, std::move(values) };
-        }
-    }
-
-    /**
-     * @brief Async create full path.
-     * If the path depth more than 1, the prefix path will be created automatically.
-     *
-     * @param path The full path need to be created
-     * @param cb Callback, 2th arg is a new path name if mode is sequential
-     * @param value Set the path initial value when created
-     * @param mode Default is persistent path
-    */
-    void async_create_path(std::string_view path, create_cb cb, std::string_view value = "",
-                           create_mode mode = create_mode::persistent) {
-        auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-        ConfigType::create_path(path, value, create_mode, [this, cb](auto e, std::string&& path) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e), std::move(path));
-            }
-        });
-    }
-
-    /**
-     * @brief Async change a path value if path exist
-     * @param path The target path
-     * @param value The changed value
-     * @param callback
-    */
-    void async_set_path_value(std::string_view path, std::string_view value, operate_cb callback) {
-        ConfigType::set_path_value(path, value, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
-
-    /**
-     * @brief Async delete the path (include their sub path).
-     *
-     * @param path The target path
-     * @param callback
-    */
-    void async_del_path(std::string_view path, operate_cb callback) {
-        ConfigType::delete_path(path, [this, cb = std::move(callback)](auto e) {
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
-
-    /**
-     * @brief Async remove the watch, the path event will not be triggered.
-     * @param path The target path
-     * @param type Watch type, path or sub-path
-     * @param callback
-    */
-    void async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
-        ConfigType::remove_watches(
-            path, static_cast<int>(type),
-            [this, type, p = std::string(path), cb = std::move(callback)](auto e) {
-            last_sub_path_.erase(p);
-            sub_path_value_.erase(p);
-            if (type == watch_type::watch_path) {
-                std::unique_lock<std::mutex> lock(record_mtx_);
-                record_.erase(p);
-            }
-            else { //sub-path
-                std::unique_lock<std::mutex> lock(record_mtx_);
-                mapping_record_.erase(p);
-                if (auto it = record_.find(p); it != record_.end()) {
-                    it->second.erase(type);
-                    if (it->second.empty()) {
-                        record_.erase(it);
-                    }              
-                }
-            }
-
-            if (cb) {
-                cb(ConfigType::make_error_code(e));
-            }
-        });
-    }
-
-    /**
-     * @brief Async get the path value.
-     * Also valid for a non existed path. The monitor will start after the target path is created.
-     *
-     * @param path The target path
-     * @param cb Callback, 2th arg is changed value.
-     * If the event is del, then the changed value must be empty.
-    */
-    void async_watch_path(std::string_view path, watch_cb cb) {
-        if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
-            std::unique_lock<std::mutex> lock(record_mtx_);
-            record_[std::string(path)].emplace(watch_type::watch_path, cb);
-            lock.unlock();
-        }
-
-        ConfigType::exists_path(path, [this, cb, p = std::string(path)](auto err, auto eve) {
-            if (!ConfigType::is_no_error(err)) {
-                return;
-            }
-
-            if (ConfigType::is_dummy_event(eve) || ConfigType::is_create_event(eve)) {
-                ConfigType::get_path_value(p, [cb, this](auto err, auto&& value) {
-                    if (ConfigType::is_no_node(err)) {
-                        //watch_path do not need content when del event, the mapping is explicit
-                        return cb(path_event::del, {});
-                    }
-                    if (ConfigType::is_no_error(err) && value.has_value()) {
-                        cb(path_event::changed, std::move(value.value()));
-                    }
-                });
-            }
-        });
+        return std::pair{ ec, std::move(values) };
     }
 
     /**
      * @brief Async get children path value of the target path.
      * Also valid for a non existed path. The monitor will start after the target path is created.
      *
-     * @tparam WatchCb
-     * @tparam Mapping Enable mapping or not.
      * @param path The target path
      * @param cb Callback, 2th arg is changed value.
-     * If disable mapping, for del event, changed value is last time value.
-     * If enable mapping, the extra 3th arg is children path. For del event, 2th arg is awalys empty
+     * If the event is del, then the changed value must be empty.
     */
-    template<
-        bool Mapping = true,
-        typename WatchCb = std::conditional_t<Mapping, mapping_watch_cb, watch_cb>
-    >
-    void async_watch_sub_path(std::string_view path, WatchCb&& cb) {
+    void async_watch_sub_path(std::string_view path, watch_cb cb) {
         if constexpr (std::is_same_v<ConfigType, zk::cppzk>) {
             std::unique_lock<std::mutex> lock(record_mtx_);
-            if constexpr (Mapping) {
-                mapping_record_[std::string(path)] = { watch_type::watch_sub_path, cb };
-            }
-            else {
-                record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
-            }
+            record_[std::string(path)].emplace(watch_type::watch_sub_path, cb);
             lock.unlock();
         }
 
         auto main_path = std::string(path);
         auto monitor_path = [this, cb, main_path](const std::string& sub_path) {
-            ConfigType::get_path_value(
+            ConfigType::async_get_path_value(
                 sub_path, [this, cb, main_path, sub_path](auto e, std::optional<std::string>&& value) {
                 if (ConfigType::is_no_error(e) && value.has_value()) {  // changed
-                    if constexpr (Mapping) {
-                        cb(path_event::changed, std::move(value.value()), sub_path);
-                    }
-                    else {
-                        sub_path_value_[main_path][sub_path] = value.value();
-                        cb(path_event::changed, std::move(value.value()));
-                    }
+                    sub_path_value_[main_path][sub_path] = value.value();
+                    cb(path_event::changed, std::move(value.value()));
                     return;
                 }
 
                 if (ConfigType::is_no_node(e)) {  // del
-                    if constexpr (Mapping) {
-                        cb(path_event::del, {}, sub_path);
-                    }
-                    else {
-                        cb(path_event::del, std::move(sub_path_value_[main_path][sub_path]));
-                        sub_path_value_[main_path].erase(sub_path);
-                    }
+                    cb(path_event::del, std::move(sub_path_value_[main_path][sub_path]));
+                    sub_path_value_[main_path].erase(sub_path);
                 }
             });
         };
 
-        ConfigType::exists_path(path, [this, main_path, monitor_path](auto err, auto eve) {
+        ConfigType::async_watch_exists_path(path, [this, main_path, monitor_path](auto err, auto eve) {
             if (!ConfigType::is_no_error(err)) {
                 return;
             }
@@ -411,7 +318,7 @@ public:
                 return;
             }
 
-            ConfigType::get_sub_path(
+            ConfigType::async_get_sub_path(
                 main_path, [this, main_path, monitor_path](auto err, auto, auto&& sub_paths) {
                 if (!ConfigType::is_no_error(err)) {
                     return;
@@ -441,6 +348,47 @@ public:
                 }
                 last_sub_path_[main_path] = std::move(sub_paths_set);
             });
+        });
+    }
+    
+    /**
+   * @brief Sync remove the watch, the path event will not be triggered.
+   * @param path The target path
+   * @param type Watch type, path or sub-path
+  */
+    auto remove_watches(std::string_view path, watch_type type) {
+        return ConfigType::remove_watches(path, type);
+    }
+
+    /**
+     * @brief Async remove the watch, the path event will not be triggered.
+     * @param path The target path
+     * @param type Watch type, path or sub-path
+     * @param callback
+    */
+    void async_remove_watches(std::string_view path, watch_type type, operate_cb callback) {
+        ConfigType::async_remove_watches(
+            path, static_cast<int>(type),
+            [this, type, p = std::string(path), cb = std::move(callback)](auto e) {
+            last_sub_path_.erase(p);
+            sub_path_value_.erase(p);
+            if (type == watch_type::watch_path) {
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                record_.erase(p);
+            }
+            else { //sub-path
+                std::unique_lock<std::mutex> lock(record_mtx_);
+                if (auto it = record_.find(p); it != record_.end()) {
+                    it->second.erase(type);
+                    if (it->second.empty()) {
+                        record_.erase(it);
+                    }
+                }
+            }
+
+            if (cb) {
+                cb(ConfigType::make_error_code(e));
+            }
         });
     }
 

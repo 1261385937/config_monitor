@@ -1,6 +1,8 @@
 #pragma once
 #include <functional>
 #include <optional>
+#include <deque>
+#include <system_error>
 #include "cppzk_redeclare.h"
 #include "zookeeper.h"
 
@@ -12,13 +14,12 @@ inline std::unordered_map<zk_acl, ACL_vector> acl_mapping{
 };
 
 using expired_callback = std::function<void()>;
-using create_callback = std::function<void(zk_error, std::string&&)>;
-using set_callback = std::function<void(zk_error)>;
-using delete_callback = std::function<void(zk_error)>;
-using exists_callback = std::function<void(zk_error, zk_event)>;
-using get_callback = std::function<void(zk_error, std::optional<std::string>&&)>;
-using get_children_callback = std::function<void(zk_error, zk_event, std::vector<std::string>&&)>;
-using recursive_get_children_callback = std::function<void(zk_error, std::deque<std::string>&&)>;
+using create_callback = std::function<void(const std::error_code&, std::string&&)>;
+using operate_cb = std::function<void(const std::error_code&)>;
+using exists_callback = std::function<void(const std::error_code&, zk_event)>;
+using get_callback = std::function<void(const std::error_code&, std::optional<std::string>&&)>;
+using get_children_callback = std::function<void(const std::error_code&, zk_event, std::vector<std::string>&&)>;
+using recursive_get_children_callback = std::function<void(const std::error_code&, std::deque<std::string>&&)>;
 
 class cppzk;
 struct user_data {};
@@ -27,12 +28,10 @@ struct exists_userdata : user_data {
     stat_completion_t completion;
     exists_callback cb;
     cppzk* self;
-    std::string path;
     zk_event eve = zk_event::zk_dummy_event;
 
-    exists_userdata(watcher_fn f, stat_completion_t c,
-                    exists_callback callbback, cppzk* ptr, std::string_view p)
-        : wfn(f), completion(c), cb(std::move(callbback)), self(ptr), path(p) {}
+    exists_userdata(watcher_fn f, stat_completion_t c, exists_callback callbback, cppzk* ptr)
+        : wfn(f), completion(c), cb(std::move(callbback)), self(ptr) {}
 };
 struct wget_userdata : user_data {
     watcher_fn wfn;
@@ -56,5 +55,15 @@ struct get_children_userdata : user_data {
     get_children_userdata(watcher_fn f, strings_stat_completion_t c,
                           get_children_callback callbback, cppzk* ptr, std::string_view p)
         : wfn(f), children_completion(c), cb(std::move(callbback)), self(ptr), path(p) {}
+};
+struct create_userdata {
+    std::deque<std::string> split_paths;
+    std::optional<std::string> value;
+    zk_create_mode mode;
+    create_callback callbback;
+    int64_t ttl;
+    zk_acl acl;
+    cppzk* self;
+    string_stat_completion_t completion;
 };
 }  // namespace zk
