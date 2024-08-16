@@ -19,7 +19,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
-#include "cppzk_define.h"
+#include "cppzk_redeclare.h"
 
 namespace zk {
 class cppzk {
@@ -269,8 +269,7 @@ public:
 			}
 		};
 
-		auto data = std::make_shared<exists_userdata>(
-			wfn, exists_completion, std::move(ecb), this);
+		auto data = std::make_shared<exists_userdata>(wfn, exists_completion, std::move(ecb), this);
 		auto r = zoo_awexists(zh_, path.data(), wfn, data.get(), exists_completion, data.get());
 		std::lock_guard lock(mtx_);
 		releaser_.emplace((uint64_t)data.get(), std::move(data));
@@ -623,7 +622,5 @@ protected:
 			return sp_path;
 		}
 	}
-
-
 };
 }  // namespace zk
