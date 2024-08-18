@@ -9,7 +9,7 @@
 
 int main() {
 	zk::cppzk cpp_zk;
-	cpp_zk.initialize("192.168.152.137:2181", 40000);
+	cpp_zk.initialize("192.168.79.137:2181", 40000);
 	
 	cpp_zk.create_path("/1", "1", zk::zk_create_mode::zk_persistent);
 	cpp_zk.create_path("/1/2/3", "123", zk::zk_create_mode::zk_persistent);
@@ -55,6 +55,21 @@ int main() {
 
 	Sleep(1000);
 	cpp_zk.async_delete_path("/2", [](const std::error_code& ec) {
+		auto str = ec.message();
+		int x = 4;
+	});
+	cpp_zk.async_create_path("/3/4/5/6", "3456", zk::zk_create_mode::zk_ephemeral_sequential,
+		[](const std::error_code& ec, std::string&& new_path) {
+		auto str = ec.message();
+		int x = 4;
+	});
+	auto ec = cpp_zk.set_path_value("/3/4/5", "34554654654564654654564");
+	
+
+	cpp_zk.create_path("/5", {}, zk::zk_create_mode::zk_persistent);
+	auto [ecg, data] = cpp_zk.get_path_value("/5");
+
+	cpp_zk.async_get_path_value("/5", [](const std::error_code& ec, std::optional<std::string>&& val) {
 		auto str = ec.message();
 		int x = 4;
 	});

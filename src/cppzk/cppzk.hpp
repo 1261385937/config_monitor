@@ -109,16 +109,16 @@ public:
 			throw std::runtime_error("enable_ttl, ttl must > 0");
 		}
 
-		auto value_ptr = !value.has_value() ? nullptr : value.value().data();
-		auto value_len = !value.has_value() ? -1 : (int)value.value().length();
 		auto sp_path = split_path(path);
 		for (size_t i = 0; i < sp_path.size() - 1; ++i) {
-			auto rc = zoo_create2_ttl(zh_, sp_path[i].data(), nullptr, 0,
-				&acl_mapping[acl], (int)mode, ttl, nullptr, 0, nullptr);
+			auto rc = zoo_create2_ttl(zh_, sp_path[i].data(), nullptr, -1,
+				&acl_mapping[acl], ZOO_PERSISTENT, -1, nullptr, 0, nullptr);
 			if ((rc != ZOO_ERRORS::ZOK) && (rc != ZOO_ERRORS::ZNODEEXISTS)) { //create error
 				return std::make_tuple(make_ec(rc), std::string{});
 			}
 		}
+		auto value_ptr = !value.has_value() ? nullptr : value.value().data();
+		auto value_len = !value.has_value() ? -1 : (int)value.value().length();
 		auto new_path_len = path.length() + 16; //16 for sequence number, maybe
 		auto ptr = std::make_unique<char[]>(new_path_len);
 		auto ret = zoo_create2_ttl(zh_, path.data(), value_ptr, value_len,
@@ -141,7 +141,7 @@ public:
 		auto sp_path = split_path(path);
 		if (sp_path.size() == 1) { //just 1 depth
 			auto val_ptr = !value.has_value() ? nullptr : value.value().data();
-			auto val_len = !value.has_value() ? 0 : (int)value.value().length();
+			auto val_len = !value.has_value() ? -1 : (int)value.value().length();
 			auto ud = new create_callback{ std::move(ccb) };
 			zoo_acreate2_ttl(zh_, path.data(), val_ptr, val_len, &acl_mapping[acl], (int)mode, ttl,
 				[](int rc, const char* str, const struct Stat*, const void* data) {
@@ -167,22 +167,22 @@ public:
 				delete cud;
 				return;
 			}
-			if (sp_path.size() == 1) { //create the layer (whole path)
+			if (sp_path.size() == 1) { //create the last layer (whole path)
 				auto val_ptr = !cud->value.has_value() ? nullptr : cud->value.value().data();
-				auto val_len = !cud->value.has_value() ? 0 : (int)cud->value.value().length();
+				auto val_len = !cud->value.has_value() ? -1 : (int)cud->value.value().length();
 				zoo_acreate2_ttl(cud->self->zh_, sp_path[0].data(), val_ptr, val_len,
 					&acl_mapping[cud->acl], (int)cud->mode, cud->ttl, cud->completion, cud);
 			}
 			else {
-				zoo_acreate2_ttl(cud->self->zh_, sp_path[0].data(), nullptr, 0,
+				zoo_acreate2_ttl(cud->self->zh_, sp_path[0].data(), nullptr, -1,
 					&acl_mapping[cud->acl], ZOO_PERSISTENT, -1, cud->completion, cud);
 			}
 		};
 
 		std::string first_layer = sp_path[0];
 		auto cud = new create_userdata{ split_path(path),
-				std::move(value), mode, std::move(ccb), ttl, acl, this, completion };
-		zoo_acreate2_ttl(zh_, first_layer.data(), nullptr, 0, &acl_mapping[acl], ZOO_PERSISTENT, -1,
+			std::move(value), mode, std::move(ccb), ttl, acl, this, completion };
+		zoo_acreate2_ttl(zh_, first_layer.data(), nullptr, -1, &acl_mapping[acl], ZOO_PERSISTENT, -1,
 			completion, cud);
 	}
 
@@ -235,6 +235,11 @@ public:
 		});
 	}
 
+	auto set_path_value(std::string_view path, std::string_view value) {
+		auto rc = zoo_set2(zh_, path.data(), value.data(), (int)value.length(), -1, nullptr);
+		return make_ec(rc);
+	}
+
 	void async_set_path_value(std::string_view path, std::string_view value, operate_cb cb) {
 		auto data = new operate_cb{ std::move(cb) };
 		zoo_aset(zh_, path.data(), value.data(), (int)value.length(), -1,
@@ -242,6 +247,41 @@ public:
 			auto cb = (operate_cb*)data;
 			if ((*cb)) {
 				(*cb)(make_ec(rc));
+			}
+			delete cb;
+		}, data);
+	}
+
+	auto get_path_value(std::string_view path) {
+		constexpr int size = 1024;
+		char buf[size]{};
+		int len = size;
+		Stat stat{};
+		auto rc = zoo_get(zh_, path.data(), 0, buf, &len, &stat);
+		if ((rc != ZOO_ERRORS::ZOK) || (len == -1)) {
+			return std::make_tuple(make_ec(rc), std::optional<std::string>{});
+		}
+
+		auto real_len = stat.dataLength;
+		if (real_len <= size) {
+			auto val = std::string{ buf, (size_t)real_len };
+			return std::make_tuple(make_ec(rc), std::optional<std::string>(std::move(val)));
+		}
+
+		//buf is not enough, re-get the data
+		auto ptr = std::make_unique<char[]>(static_cast<size_t>(real_len));
+		rc = zoo_get(zh_, path.data(), 0, ptr.get(), &real_len, nullptr);
+		auto value = std::string{ buf, (size_t)real_len };
+		return std::make_tuple(make_ec(rc), std::optional<std::string>(std::move(value)));
+	}
+
+	void async_get_path_value(std::string_view path, get_callback cb) {
+		auto data = new get_callback{ std::move(cb) };
+		zoo_awget(zh_, path.data(), nullptr, nullptr, 
+			[](int rc, const char* val, int value, const struct Stat*, const void* data) {
+			auto cb = (get_callback*)data;
+			if ((*cb)) {
+				(*cb)(make_ec(rc), val ? std::string(val, value) : std::optional<std::string>{});
 			}
 			delete cb;
 		}, data);
