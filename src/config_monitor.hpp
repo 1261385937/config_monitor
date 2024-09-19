@@ -272,7 +272,7 @@ public:
 	 * Also valid for a non existed path, monitor will start after the target path is created.
 	 *
 	 * @param path The target path
-	 * @param cb Callback, 2th arg is changed value, 3th arg is associated sub path. 
+	 * @param cb Callback, 2th arg is associated sub path, 3th arg is changed value. 
 	 * If the event is del, then the changed value must be empty.
 	 */
 	void watch_sub_path(std::string_view path, watch_sub_cb callback) {
