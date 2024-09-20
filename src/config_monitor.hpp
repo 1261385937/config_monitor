@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
+#include <future>
 
 namespace zk {
 class cppzk;
@@ -306,7 +307,7 @@ public:
 				return; //filter the target path other event
 			}
 
-			ConfigType::async_get_sub_path<true>(prefix, 
+			ConfigType::template async_get_sub_path<true>(prefix,
 				[this, prefix, monitor = std::move(monitor)](const auto& ec, auto&& sub_paths) {
 				if (ec) {
 					return;
