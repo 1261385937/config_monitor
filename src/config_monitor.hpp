@@ -124,12 +124,13 @@ public:
 	 * @param path The full path need to be created
 	 * @param value The path initial value when created
 	 * @param mode Default is persistent path
+	 * @param ttl The persistent path will be removed after ttl time (ms)
 	 * @return [std::error_code, path_name], a new path name if mode is sequential
 	 */
 	auto create_path(std::string_view path, const std::optional<std::string>& value = std::nullopt,
-		create_mode mode = create_mode::persistent) {
+		create_mode mode = create_mode::persistent, int64_t ttl = -1) {
 		auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
-		return ConfigType::create_path(path, value, create_mode);
+		return ConfigType::create_path(path, value, create_mode, ttl);
 	}
 
 	/**
@@ -140,17 +141,18 @@ public:
 	 * @param cb Callback, 2th arg is a new path name if mode is sequential
 	 * @param value Set the path initial value when created
 	 * @param mode Default is persistent path
+	 * @param ttl The persistent path will be removed after ttl time (ms)
 	 */
 	void async_create_path(std::string path, create_cb cb,
 		const std::optional<std::string>& value = std::nullopt,
-		create_mode mode = create_mode::persistent) {
+		create_mode mode = create_mode::persistent, int64_t ttl = -1) {
 		auto create_mode = ConfigType::get_create_mode(static_cast<int>(mode));
 		ConfigType::async_create_path(path, value, create_mode,
 			[cb = std::move(cb)](const auto& ec, std::string&& new_path) {
 			if (cb) {
 				cb(ec, std::move(new_path));
 			}
-		});
+		}, ttl);
 	}
 
 	/**
