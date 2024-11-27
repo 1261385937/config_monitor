@@ -290,7 +290,7 @@ public:
 		if (rc != ZOO_ERRORS::ZOK) {
 			return std::make_tuple(make_ec(rc), std::optional<std::string>{});
 		}
-		auto value = std::string{ buf, (size_t)real_len };
+		auto value = std::string{ ptr.get(), (size_t)real_len};
 		return std::make_tuple(make_ec(rc), std::optional<std::string>(std::move(value)));
 	}
 
